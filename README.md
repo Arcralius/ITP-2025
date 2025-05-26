@@ -92,6 +92,11 @@ In a separate terminal window, execute:
 python dns_sniffer.py
 ```
 
+For sniff.c, compile and execute:
+```bash
+gcc sniff.c -o sniff -lpcap -lcurl -lpthread
+./sniff
+```
 Ensure this process has sufficient privileges to capture packets (run as administrator/root if necessary).
 
 ---
