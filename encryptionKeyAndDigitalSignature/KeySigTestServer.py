@@ -9,6 +9,13 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
 
+AES_KEY_PATH = ".//aes.key"
+ED_PRIV_PATH = ".//ed25519_private.pem"
+ED_PUB_PATH  = ".//ed25519_public.pem"
+HASH_OUT_PATH= ".//hash.txt"
+ZIP_OUT_PATH = ".//keys.zip"
+
+
 app = Flask(__name__)
 
 
@@ -89,9 +96,9 @@ def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
 
 
 def daily_task():
-    generate_keys_and_hash()
-    hash_keys()
-    zip_keys()
+    generate_keys_and_hash(AES_KEY_PATH, ED_PRIV_PATH, ED_PUB_PATH)
+    hash_keys(AES_KEY_PATH, ED_PRIV_PATH, HASH_OUT_PATH)
+    zip_keys(AES_KEY_PATH, ED_PRIV_PATH, ZIP_OUT_PATH)
 
 
 def verify_password(password: str, password_file_path: str) -> bool:

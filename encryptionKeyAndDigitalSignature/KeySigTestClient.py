@@ -11,6 +11,13 @@ from crypto.Cipher import AES
 from crypto.Util.Padding import pad
 
 
+TEST_LINK = "http://localhost/d86e8a473fec18b62af8540956c8e4be3dccb9f6b1938d05384fb56424525763"
+TEST_PASS = ""
+OUT_DIR   = ".//client_download"
+ZIP_NAME  = "keys.zip"
+VERIFY_SSL= False
+
+
 def sign_and_package_file(file_to_sign: str, signature_file: str, output_path: str):
     try:
         # Load the private key for signing
@@ -120,7 +127,7 @@ def download_sig_and_key(download_link: str, password: str, output_dir: str, ver
         os.makedirs(output_dir, exist_ok=True)
 
         # Define the path for the downloaded ZIP file
-        zip_path = os.path.join(output_dir, 'downloaded_files.zip')
+        zip_path = os.path.join(output_dir, ZIP_NAME)
 
         # Write the response content to the ZIP file
         with open(zip_path, 'wb') as f:
@@ -145,3 +152,9 @@ def download_sig_and_key(download_link: str, password: str, output_dir: str, ver
         print(f"Error extracting ZIP file: {zip_err}")
     except Exception as err:
         print(f"An unexpected error occurred: {err}")
+
+
+
+if __name__ == '__main__':
+    download_sig_and_key(TEST_LINK, TEST_PASS, OUT_DIR, VERIFY_SSL)
+    
