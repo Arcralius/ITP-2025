@@ -2,54 +2,243 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>DNS Traffic Viewer</title>
-    <meta http-equiv="refresh" content="5"> <!-- Auto-refresh every 5 seconds -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sensor Monitoring Dashboard</title>
     <style>
-        body {
-            font-family: Arial;
+        body { font-family: Arial, sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        h1 { color: #0056b3; }
+        .tab-container { margin-top: 20px; }
+        .tab-buttons button {
+            background-color: #ddd;
+            border: none;
+            padding: 10px 15px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-right: 5px;
+            border-radius: 5px 5px 0 0;
+        }
+        .tab-buttons button.active {
+            background-color: #0056b3;
+            color: white;
+        }
+        .tab-content {
+            background-color: white;
             padding: 20px;
-            background-color: #f7f7f7;
+            border-radius: 0 5px 5px 5px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
         }
-        h1 {
-            color: #333;
-        }
-        .group {
-            margin-bottom: 20px;
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+        .status-ok { background-color: #d4edda; color: #155724; }
+        .status-missed { background-color: #fff3cd; color: #856404; }
+        .status-no-heartbeat { background-color: #f8d7da; color: #721c24; }
+        input[type="text"] {
+            padding: 8px;
+            margin-bottom: 10px;
             border: 1px solid #ddd;
+            border-radius: 4px;
+            width: calc(100% - 20px);
+        }
+        pre {
+            background-color: #eee;
             padding: 10px;
             border-radius: 5px;
-            background-color: #fff;
-        }
-        .timestamp {
-            font-size: 1.2em;
-            font-weight: bold;
-            color: #007BFF;
-            margin-bottom: 10px;
-        }
-        .entry {
-            margin-left: 20px;
-            padding: 4px 0;
-            border-bottom: 1px dashed #eee;
-        }
-        .entry:last-child {
-            border-bottom: none;
+            overflow-x: auto;
         }
     </style>
 </head>
 <body>
-    <h1>Collected DNS Queries</h1>
+    <h1>Sensor Monitoring Dashboard</h1>
 
-    {% if grouped %}
-        {% for timestamp, entries in grouped.items() %}
-            <div class="group">
-                <div class="timestamp">{{ timestamp }}</div>
-                {% for content in entries %}
-                    <div class="entry">{{ content }}</div>
-                {% endfor %}
-            </div>
-        {% endfor %}
-    {% else %}
-        <p>No DNS data has been received yet.</p>
-    {% endif %}
+    <input type="text" id="searchInput" onkeyup="filterTable()" placeholder="Search by Sensor ID or Domain...">
+
+    <div class="tab-container">
+        <div class="tab-buttons">
+            <button class="active" onclick="showTab('liveStatus')">Live Status (Missed & No Heartbeat)</button>
+            <button onclick="showTab('allSensors')">All Sensors</button>
+            <button onclick="showTab('dnsQueries')">DNS Queries</button>
+            <button onclick="showTab('udpPackets')">Captured UDP Packets</button>
+        </div>
+
+        <div id="liveStatus" class="tab-content">
+            <h2>Live Status (Missed & No Heartbeat)</h2>
+            <table id="liveStatusTable">
+                <thead>
+                    <tr>
+                        <th>Sensor ID</th>
+                        <th>Status</th>
+                        <th>Last Heartbeat</th>
+                        <th>Time Since Last (s)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </div>
+
+        <div id="allSensors" class="tab-content" style="display:none;">
+            <h2>All Sensors</h2>
+            <table id="allSensorsTable">
+                <thead>
+                    <tr>
+                        <th>Sensor ID</th>
+                        <th>Status</th>
+                        <th>Last Heartbeat</th>
+                        <th>Time Since Last (s)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </div>
+
+        <div id="dnsQueries" class="tab-content" style="display:none;">
+            <h2>Collected DNS Queries</h2>
+            <table id="dnsQueriesTable">
+                <thead>
+                    <tr>
+                        <th>Sensor ID</th>
+                        <th>Timestamp</th>
+                        <th>Domain</th>
+                        <th>Resolved IP</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </div>
+
+        <div id="udpPackets" class="tab-content" style="display:none;">
+            <h2>Captured UDP Packets</h2>
+            <table id="udpPacketsTable">
+                <thead>
+                    <tr>
+                        <th>Sensor ID</th>
+                        <th>Timestamp</th>
+                        <th>Source IP:Port</th>
+                        <th>Dest IP:Port</th>
+                        <th>Payload</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        let activeTab = 'liveStatus';
+
+        function showTab(tabId) {
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.style.display = 'none';
+            });
+            document.querySelectorAll('.tab-buttons button').forEach(button => {
+                button.classList.remove('active');
+            });
+
+            document.getElementById(tabId).style.display = 'block';
+            document.querySelector(`.tab-buttons button[onclick="showTab('${tabId}')"]`).classList.add('active');
+            activeTab = tabId;
+            filterTable();
+        }
+
+        async function updateTables() {
+            try {
+                const sensorResponse = await fetch('/api/sensor_status');
+                const sensorData = await sensorResponse.json();
+                populateSensorTable(sensorData.missed_sensors, 'liveStatusTable');
+                populateSensorTable(sensorData.all_sensors, 'allSensorsTable');
+
+                const dnsResponse = await fetch('/api/dns_data');
+                const dnsData = await dnsResponse.json();
+                populateDnsTable(dnsData.dns_data, 'dnsQueriesTable');
+
+                const udpResponse = await fetch('/api/udp_packets');
+                const udpData = await udpResponse.json();
+                populateUdpTable(udpData.udp_packets, 'udpPacketsTable');
+
+            } catch (error) {
+                console.error('Error updating tables:', error);
+            }
+        }
+
+        function populateSensorTable(sensors, tableId) {
+            const tableBody = document.querySelector(`#${tableId} tbody`);
+            tableBody.innerHTML = '';
+            for (const id in sensors) {
+                const sensor = sensors[id];
+                const row = tableBody.insertRow();
+                row.className = `status-${sensor.status.toLowerCase().replace(/ /g, '-')}`;
+                row.insertCell().textContent = sensor.id;
+                row.insertCell().textContent = sensor.status;
+                row.insertCell().textContent = sensor.last_heartbeat === 'N/A' ? 'N/A' : new Date(sensor.last_heartbeat).toLocaleString();
+                row.insertCell().textContent = sensor.time_since_last_heartbeat_s;
+            }
+            filterTable();
+        }
+
+        function populateDnsTable(dnsQueries, tableId) {
+            const tableBody = document.querySelector(`#${tableId} tbody`);
+            tableBody.innerHTML = '';
+            dnsQueries.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            dnsQueries.forEach(batch => {
+                batch.dns_queries.forEach(query => {
+                    const row = tableBody.insertRow();
+                    row.insertCell().textContent = batch.sensor_id;
+                    row.insertCell().textContent = new Date(batch.timestamp).toLocaleString();
+                    row.insertCell().textContent = query.domain;
+                    row.insertCell().textContent = query.resolved_ip;
+                    row.insertCell().textContent = query.status;
+                });
+            });
+            filterTable();
+        }
+
+        function populateUdpTable(udpPackets, tableId) {
+            const tableBody = document.querySelector(`#${tableId} tbody`);
+            tableBody.innerHTML = '';
+            udpPackets.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            udpPackets.forEach(packetInfo => {
+                const row = tableBody.insertRow();
+                row.insertCell().textContent = packetInfo.sensor_id;
+                row.insertCell().textContent = new Date(packetInfo.timestamp).toLocaleString();
+                row.insertCell().textContent = `${packetInfo.packet_info.src_ip || 'N/A'}:${packetInfo.packet_info.src_port || 'N/A'}`;
+                row.insertCell().textContent = `${packetInfo.packet_info.dst_ip || 'N/A'}:${packetInfo.packet_info.dst_port || 'N/A'}`;
+                row.insertCell().textContent = packetInfo.packet_info.payload || 'N/A';
+            });
+            filterTable();
+        }
+
+        function filterTable() {
+            const input = document.getElementById('searchInput');
+            const filter = input.value.toUpperCase();
+            let table;
+            if (activeTab === 'liveStatus') table = document.getElementById('liveStatusTable');
+            else if (activeTab === 'allSensors') table = document.getElementById('allSensorsTable');
+            else if (activeTab === 'dnsQueries') table = document.getElementById('dnsQueriesTable');
+            else if (activeTab === 'udpPackets') table = document.getElementById('udpPacketsTable');
+
+            if (!table) return;
+
+            const tr = table.getElementsByTagName('tr');
+
+            for (let i = 1; i < tr.length; i++) {
+                let rowText = tr[i].textContent.toUpperCase();
+                if (rowText.includes(filter)) {
+                    tr[i].style.display = '';
+                } else {
+                    tr[i].style.display = 'none';
+                }
+            }
+        }
+
+        updateTables();
+        setInterval(updateTables, 2000);
+    </script>
 </body>
 </html>
