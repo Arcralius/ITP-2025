@@ -9,11 +9,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
 
-AES_KEY_PATH = "C:/Users/work/Documents/001 SIT stuff/2114_ITP1/ITP-2025/encryptionKeyAndDigitalSignature/aes.key"
-ED_PRIV_PATH = "C:/Users/work/Documents/001 SIT stuff/2114_ITP1/ITP-2025/encryptionKeyAndDigitalSignature/ed25519_private.pem"
-ED_PUB_PATH  = "C:/Users/work/Documents/001 SIT stuff/2114_ITP1/ITP-2025/encryptionKeyAndDigitalSignature/ed25519_public.pem"
-HASH_OUT_PATH= "C:/Users/work/Documents/001 SIT stuff/2114_ITP1/ITP-2025/encryptionKeyAndDigitalSignature/hash.txt"
-ZIP_OUT_PATH = "C:/Users/work/Documents/001 SIT stuff/2114_ITP1/ITP-2025/encryptionKeyAndDigitalSignature/keys.zip"
+AES_KEY_PATH = "./aes.key"
+ED_PRIV_PATH = "./ed25519_private.pem"
+ED_PUB_PATH  = "./ed25519_public.pem"
+HASH_OUT_PATH= "./hash.txt"
+ZIP_OUT_PATH = "./keys.zip"
+PASSWORD_PATH= ""
 
 
 logging.basicConfig(
@@ -38,9 +39,6 @@ def append_date_to_filename(path: str) -> str:
     base, ext = os.path.splitext(path)
     date_str = datetime.now().strftime("%Y%m%d")
     return f"{base}_{date_str}{ext}"
-
-
-PASSWORD_PATH= append_date_to_filename(HASH_OUT_PATH)
 
 
 def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: str):

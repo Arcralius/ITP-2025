@@ -10,7 +10,7 @@ from Crypto.Util.Padding import pad
 
 
 TEST_LINK = "http://localhost:5000/d86e8a473fec18b62af8540956c8e4be3dccb9f6b1938d05384fb56424525763"
-OUT_DIR   = ".//client_download"
+OUT_DIR   = "./client_download"
 ZIP_NAME  = "keys.zip"
 VERIFY_SSL= False
 
