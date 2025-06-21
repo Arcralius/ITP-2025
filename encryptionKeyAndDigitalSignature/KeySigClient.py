@@ -1,14 +1,18 @@
 import requests
 import os
-
-from crypto.Signature import eddsa
-from crypto.PublicKey import ECC
-from crypto.Hash import SHA512
-from crypto.Random import get_random_bytes
+from Crypto.Signature import eddsa
+from Crypto.PublicKey import ECC
+from Crypto.Hash import SHA512
+from Crypto.Random import get_random_bytes
 from zipfile import ZipFile, BadZipFile
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 
-from crypto.Cipher import AES
-from crypto.Util.Padding import pad
+
+TEST_LINK = "http://localhost:5000/d86e8a473fec18b62af8540956c8e4be3dccb9f6b1938d05384fb56424525763"
+OUT_DIR   = "./client_download"
+ZIP_NAME  = "keys.zip"
+VERIFY_SSL= False
 
 
 def sign_and_package_file(file_to_sign: str, signature_file: str, output_path: str):
@@ -113,14 +117,14 @@ def download_sig_and_key(download_link: str, password: str, output_dir: str, ver
         data = {'password': password}
 
         # Send the POST request
-        response = requests.post(download_link, data=data, stream=True, verify=verify_ssl)
+        response = requests.post(download_link, json=data, stream=True, verify=verify_ssl)
         response.raise_for_status()  # Raise an error for bad status codes
 
         # Ensure the output directory exists
         os.makedirs(output_dir, exist_ok=True)
 
         # Define the path for the downloaded ZIP file
-        zip_path = os.path.join(output_dir, 'downloaded_files.zip')
+        zip_path = os.path.join(output_dir, ZIP_NAME)
 
         # Write the response content to the ZIP file
         with open(zip_path, 'wb') as f:
@@ -145,3 +149,9 @@ def download_sig_and_key(download_link: str, password: str, output_dir: str, ver
         print(f"Error extracting ZIP file: {zip_err}")
     except Exception as err:
         print(f"An unexpected error occurred: {err}")
+
+
+if __name__ == '__main__':
+    password = input("Enter your password: ")
+    download_sig_and_key(TEST_LINK, password, OUT_DIR, VERIFY_SSL)
+    

@@ -1,7 +1,7 @@
 from flask import Flask, request, send_file, jsonify
-from apscheduler.schedulers.background import BackgroundScheduler
+from flask_apscheduler import APScheduler
 from datetime import datetime
-
+import logging
 import os
 import hashlib
 import zipfile
@@ -9,15 +9,49 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
 
+AES_KEY_PATH = "./aes.key"
+ED_PRIV_PATH = "./ed25519_private.pem"
+ED_PUB_PATH  = "./ed25519_public.pem"
+HASH_OUT_PATH= "./hash.txt"
+ZIP_OUT_PATH = "./keys.zip"
+PASSWORD_PATH= ""
+
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        # logging.FileHandler('scheduler.log')  # enable to create log file
+    ]
+)
+
+
 app = Flask(__name__)
+scheduler = APScheduler()
+scheduler.init_app(app)
+if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    # Only start scheduler in the reloader's child process
+    scheduler.start()
+
+
+def append_date_to_filename(path: str) -> str:
+    base, ext = os.path.splitext(path)
+    date_str = datetime.now().strftime("%Y%m%d")
+    return f"{base}_{date_str}{ext}"
 
 
 def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: str):
+    # Append date to each filename
+    aes_key_path = append_date_to_filename(aes_key_path)
+    ed_priv_path = append_date_to_filename(ed_priv_path)
+    ed_pub_path = append_date_to_filename(ed_pub_path)
+
     # 1. Generate AES key
     aes_key = os.urandom(32)
     with open(aes_key_path, 'wb') as f:
         f.write(aes_key)
-    print(f"AES key saved to {aes_key_path}")
+    logging.info(f"AES key saved to {aes_key_path}")
 
     # 2. Generate Ed25519 private key
     priv = Ed25519PrivateKey.generate()
@@ -28,7 +62,7 @@ def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: st
     )
     with open(ed_priv_path, 'wb') as f:
         f.write(priv_bytes)
-    print(f"Ed25519 private key saved to {ed_priv_path}")
+    logging.info(f"Ed25519 private key saved to {ed_priv_path}")
 
     # 3. Generate Ed25519 public key
     pub = priv.public_key()
@@ -38,10 +72,15 @@ def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: st
     )
     with open(ed_pub_path, 'wb') as f:
         f.write(pub_bytes)
-    print(f"Ed25519 public key saved to {ed_pub_path}")
+    logging.info(f"Ed25519 public key saved to {ed_pub_path}")
 
 
 def hash_keys(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
+    # Append date to each filename
+    aes_key_path = append_date_to_filename(aes_key_path)
+    ed_priv_path = append_date_to_filename(ed_priv_path)
+    output_hash_path = append_date_to_filename(output_hash_path)
+
     try:
         # Read AES key
         with open(aes_key_path, 'rb') as f:
@@ -67,10 +106,15 @@ def hash_keys(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
     except Exception as e:
         raise Exception(f"Error writing hash to file '{output_hash_path}': {e}")
 
-    print(f"SHA-256 hash of combined keys written to: {output_hash_path}")
+    logging.info(f"SHA-256 hash of combined keys written to: {output_hash_path}")
 
 
 def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
+    # Append date to each filename
+    aes_key_path = append_date_to_filename(aes_key_path)
+    ed_priv_path = append_date_to_filename(ed_priv_path)
+    output_zip_path = append_date_to_filename(output_zip_path)
+
     # Check both input files exist
     for path in (aes_key_path, ed_priv_path):
         if not os.path.isfile(path):
@@ -83,15 +127,9 @@ def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
         with zipfile.ZipFile(output_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
             zipf.write(aes_key_path, arcname=os.path.basename(aes_key_path))
             zipf.write(ed_priv_path, arcname=os.path.basename(ed_priv_path))
-        print(f"Successfully created ZIP archive: {output_zip_path}")
+        logging.info(f"Successfully created ZIP archive: {output_zip_path}")
     except Exception as e:
         raise Exception(f"Error creating ZIP file '{output_zip_path}': {e}")
-
-
-def daily_task():
-    generate_keys_and_hash()
-    hash_keys()
-    zip_keys()
 
 
 def verify_password(password: str, password_file_path: str) -> bool:
@@ -100,23 +138,24 @@ def verify_password(password: str, password_file_path: str) -> bool:
             valid_passwords = {line.strip() for line in f if line.strip()}
         return password in valid_passwords
     except FileNotFoundError:
-        print(f"Password file not found: {password_file_path}")
+        logging.info(f"Password file not found: {password_file_path}")
         return False
     except Exception as e:
-        print(f"Error reading password file: {e}")
+        logging.info(f"Error reading password file: {e}")
         return False
 
 
-@app.before_first_request
-def init_scheduler():
-    scheduler = BackgroundScheduler()
-    # Schedule to run daily—every 24 hours since app start
-    scheduler.add_job(daily_task, trigger='interval', hours=24, id='daily_task')
-    scheduler.start()
+@scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
+def daily_task():
+    try:
+        generate_keys_and_hash(AES_KEY_PATH, ED_PRIV_PATH, ED_PUB_PATH)
+        hash_keys(AES_KEY_PATH, ED_PRIV_PATH, HASH_OUT_PATH)
+        zip_keys(AES_KEY_PATH, ED_PRIV_PATH, ZIP_OUT_PATH)
 
-    # Ensure scheduler is shut down properly when Flask exits
-    import atexit
-    atexit.register(lambda: scheduler.shutdown())
+        global PASSWORD_PATH
+        PASSWORD_PATH = append_date_to_filename(HASH_OUT_PATH)
+    except Exception as e:
+        logging.exception(f"Exception in daily_task: {e}")
 
 
 @app.route('/d86e8a473fec18b62af8540956c8e4be3dccb9f6b1938d05384fb56424525763', methods=['POST'])
@@ -126,13 +165,16 @@ def get_file():
         return jsonify({'error': 'Password is required'}), 400
 
     password = data['password']
-    if not verify_password(password):
+    if not verify_password(password, PASSWORD_PATH):
         return jsonify({'error': 'Invalid password'}), 403
 
     try:
-        file_path = 'path/to/your/file.txt'
-        return send_file(file_path, as_attachment=True)
+        file = append_date_to_filename(ZIP_OUT_PATH)
+        return send_file(file, as_attachment=True)
     except Exception as e:
+        import traceback
+        logging.error("Exception occurred:", e)
+        traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
 
