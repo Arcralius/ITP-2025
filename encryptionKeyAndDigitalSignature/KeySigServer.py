@@ -158,7 +158,7 @@ def daily_task():
         logging.exception(f"Exception in daily_task: {e}")
 
 
-@app.route('/d86e8a473fec18b62af8540956c8e4be3dccb9f6b1938d05384fb56424525763', methods=['POST'])
+@app.route('/download', methods=['POST'])
 def get_file():
     data = request.json
     if not data or 'password' not in data:
