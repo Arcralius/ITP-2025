@@ -318,6 +318,10 @@ if __name__ == "__main__":
     pwd_path = os.path.join(OUT_DIR, append_date_to_filename("pwd.txt"))
     generate_password(aes_path, ed_priv, pwd_path)
 
+    download_pdns_data("5000", "./pdns_data")
+
+    upload_pdns_data("./dns_data", ed_priv, aes_path, pwd_path, "http://localhost:5000/captured_udp_packets")
+
     while True:
         send_heartbeat(sensor_id, password, HEARTBEAT_URL)
         time.sleep(5)  # replace with 300 for real 5-minute interval
