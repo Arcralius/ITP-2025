@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time DNS Log Viewer</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.js"></script>
+    <style>
+        body {
+            font-family: monospace;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            margin: 0;
+            padding: 20px;
+        }
+        #log-container {
+            max-height: 90vh;
+            overflow-y: scroll;
+            border: 1px solid #333;
+            padding: 10px;
+            background-color: #252526;
+            border-radius: 5px;
+        }
+        .log-entry {
+            margin-bottom: 8px;
+            padding-bottom: 5px;
+            border-bottom: 1px dashed #3a3a3a;
+        }
+        .log-entry:last-child {
+            border-bottom: none;
+        }
+        .timestamp {
+            color: #888;
+            font-size: 0.9em;
+            margin-right: 10px;
+        }
+        .source-ip {
+            color: #6a9955;
+            font-weight: bold;
+        }
+        .query {
+            color: #569cd6;
+        }
+        .type {
+            color: #b5cea8;
+        }
+        .class {
+            color: #d7ba7d;
+        }
+        .answer {
+            color: #ce9178;
+        }
+    </style>
+</head>
+<body>
+    <h1>Real-time DNS Log Viewer</h1>
+    <div id="log-container">
+        </div>
+
+    <script>
+        const socket = io();
+        const logContainer = document.getElementById('log-container');
+
+        socket.on('connect', function() {
+            console.log('Connected to WebSocket');
+        });
+
+        socket.on('new_log_entry', function(log) {
+            const logEntryDiv = document.createElement('div');
+            logEntryDiv.classList.add('log-entry');
+
+            let content = `<span class="timestamp">${log.timestamp}</span>`;
+            content += `<span class="source-ip">IP: ${log.source_ip}</span> | `;
+            content += `<span class="query">Query: ${log.query}</span> `;
+            content += `<span class="type">(Type: ${log.type}, Class: ${log.class})</span>`;
+
+            if (log.answer_domain && log.answer_value) {
+                content += `<br>&nbsp;&nbsp;↳ <span class="answer">Answer: ${log.answer_domain} (${log.answer_type}): ${log.answer_value}</span>`;
+            } else if (log.authority_domain && log.authority_value) {
+                content += `<br>&nbsp;&nbsp;↳ <span class="answer">Authority: ${log.authority_domain} (NS): ${log.authority_value}</span>`;
+            } else if (log.raw) {
+                // Fallback to raw content if specific fields aren't parsed for additional records
+                const additionalRecordsMatch = log.raw.match(/Additional Records:\s*-\s*\((\d+)\):\s*\[\]/);
+                if (additionalRecordsMatch) {
+                     content += `<br>&nbsp;&nbsp;↳ <span class="answer">Additional Records: (${additionalRecordsMatch[1]}): []</span>`;
+                }
+            }
+
+
+            logEntryDiv.innerHTML = content;
+            logContainer.appendChild(logEntryDiv);
+
+            // Scroll to the bottom to show the latest logs
+            logContainer.scrollTop = logContainer.scrollHeight;
+        });
+
+        socket.on('disconnect', function() {
+            console.log('Disconnected from WebSocket');
+        });
+    </script>
+</body>
+</html>
