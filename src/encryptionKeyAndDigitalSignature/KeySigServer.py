@@ -75,7 +75,7 @@ def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: st
     logging.info(f"Ed25519 public key saved to {ed_pub_path}")
 
 
-def hash_keys(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
+def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
     # Append date to each filename
     aes_key_path = append_date_to_filename(aes_key_path)
     ed_priv_path = append_date_to_filename(ed_priv_path)
@@ -149,7 +149,7 @@ def verify_password(password: str, password_file_path: str) -> bool:
 def daily_task():
     try:
         generate_keys_and_hash(AES_KEY_PATH, ED_PRIV_PATH, ED_PUB_PATH)
-        hash_keys(AES_KEY_PATH, ED_PRIV_PATH, HASH_OUT_PATH)
+        generate_password(AES_KEY_PATH, ED_PRIV_PATH, HASH_OUT_PATH)
         zip_keys(AES_KEY_PATH, ED_PRIV_PATH, ZIP_OUT_PATH)
 
         global PASSWORD_PATH

@@ -8,14 +8,11 @@ import socket
 import threading
 import json
 import base64
-
-# used by key and sig
 from flask_apscheduler import APScheduler
 import logging
-import zipfile
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
 
+import config
+from encryptionKeyAndDigitalSignature import KeySigServer
 
 app = Flask(__name__)
 scheduler = APScheduler()
@@ -25,38 +22,20 @@ if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     scheduler.start()
 
 
-# --- Configuration for Log Files ---
-LOG_DIR = 'logs'
-HEARTBEAT_LOG_FILE = os.path.join(LOG_DIR, 'heartbeats.jsonl')
-DNS_LOG_FILE = os.path.join(LOG_DIR, 'collected_dns_data.jsonl')
-UDP_TRAFFIC_LOG_FILE = os.path.join(LOG_DIR, 'captured_udp_traffic.jsonl') # Changed to .jsonl for consistency
-os.makedirs(LOG_DIR, exist_ok=True)
+# --- Build All File Paths from Config ---
+heartbeat_log_path = os.path.join(config.LOG_DIR, config.HEARTBEAT_LOG_FILE)
+dns_log_path = os.path.join(config.LOG_DIR, config.DNS_LOG_FILE)
+udp_log_path = os.path.join(config.LOG_DIR, config.UDP_TRAFFIC_LOG_FILE)
 
+aes_key_path = os.path.join(config.KEY_STORE_DIR, config.AES_KEY_FILENAME)
+ed_priv_path = os.path.join(config.KEY_STORE_DIR, config.ED_PRIV_FILENAME)
+ed_pub_path = os.path.join(config.KEY_STORE_DIR, config.ED_PUB_FILENAME)
+pass_path = os.path.join(config.KEY_STORE_DIR, config.PASS_FILENAME)
+zip_out_path = os.path.join(config.KEY_STORE_DIR, config.ZIP_FILENAME)
 
-# --- Configuration for Log Files ---
-KEY_STORE_DIR = "store"
-AES_KEY_PATH = os.path.join(KEY_STORE_DIR, "aes.key")
-ED_PRIV_PATH = os.path.join(KEY_STORE_DIR, "ed25519_private.pem")
-ED_PUB_PATH = os.path.join(KEY_STORE_DIR, "ed25519_public.pem")
-PASS_PATH = os.path.join(KEY_STORE_DIR, "hash.txt")
-ZIP_OUT_PATH = os.path.join(KEY_STORE_DIR, "keys.zip")
-os.makedirs(KEY_STORE_DIR, exist_ok=True)
-
-
-# Define a dedicated UDP port for DNS traffic
-UDP_DNS_PORT = 5002
-
-
-# Simulated sensor database (for signature validation)
-SENSOR_DB = {
-    "f47ac10b-58cc-4372-a567-0e02b2c3d479": "supersecretkey123"
-}
-
-
-# No more global in-memory lists for data that should be file-backed
-# heartbeat_times = {} # Removed
-# collected_dns_data = [] # Removed
-# collected_udp_packets = [] # Removed
+# --- Initialize Application (e.g., create directories) ---
+os.makedirs(config.LOG_DIR, exist_ok=True)
+os.makedirs(config.KEY_STORE_DIR, exist_ok=True)
 
 
 # --- Helper for decoding incoming Base64 JSON payloads ---
@@ -76,7 +55,7 @@ def decode_request_data(request_data):
         raise ValueError(f"An unexpected error occurred during payload processing: {e}")
 
 
-# --- Utility to read JSONL files ---
+# # --- Utility to read JSONL files ---
 def read_jsonl_file(filepath):
     data = []
     if os.path.exists(filepath):
@@ -91,12 +70,12 @@ def read_jsonl_file(filepath):
 
 # --- UDP Server for DNS Data ---
 def run_udp_dns_server():
-    print(f"Starting UDP server for DNS data on port {UDP_DNS_PORT}...")
+    print(f"Starting UDP server for DNS data on port {config.UDP_DNS_PORT}...")
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        udp_socket.bind(('0.0.0.0', UDP_DNS_PORT))
+        udp_socket.bind(('0.0.0.0', config.UDP_DNS_PORT))
     except OSError as e:
-        print(f"ERROR: Could not bind UDP socket to port {UDP_DNS_PORT}. Is it already in use? ({e})")
+        print(f"ERROR: Could not bind UDP socket to port {config.UDP_DNS_PORT}. Is it already in use? ({e})")
         print("Please ensure no other instances of this app are running, or change UDP_DNS_PORT to an unused port (e.g., 5003).")
         return
 
@@ -117,7 +96,8 @@ def run_udp_dns_server():
                     print(f"UDP DNS Error: Missing fields from {addr}")
                     continue
 
-                secret = SENSOR_DB.get(sensor_id)
+                # TODO: implement database for sensor
+                secret = config.SENSOR_DB.get(sensor_id)
                 if not secret:
                     print(f"UDP DNS Error: Unknown sensor {sensor_id} from {addr}")
                     continue
@@ -130,7 +110,7 @@ def run_udp_dns_server():
                     continue
                 
                 # Log DNS data to file instead of in-memory list
-                with open(DNS_LOG_FILE, 'a', encoding='utf-8') as f:
+                with open(config.DNS_LOG_FILE, 'a', encoding='utf-8') as f:
                     log_entry = {
                         'sensor_id': sensor_id,
                         'timestamp': timestamp,
@@ -148,139 +128,29 @@ def run_udp_dns_server():
             print(f"UDP server general error: {e}")
 
 
-def append_date_to_filename(path: str) -> str:
-    base, ext = os.path.splitext(path)
-    date_str = datetime.now().strftime("%Y%m%d")
-    return f"{base}_{date_str}{ext}"
-
-
-def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: str):
-    # Append date to each filename
-    aes_key_path = append_date_to_filename(aes_key_path)
-    ed_priv_path = append_date_to_filename(ed_priv_path)
-    ed_pub_path = append_date_to_filename(ed_pub_path)
-
-    # 1. Generate AES key
-    aes_key = os.urandom(32)
-    with open(aes_key_path, 'wb') as f:
-        f.write(aes_key)
-    logging.info(f"AES key saved to {aes_key_path}")
-
-    # 2. Generate Ed25519 private key
-    priv = Ed25519PrivateKey.generate()
-    priv_bytes = priv.private_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PrivateFormat.PKCS8,
-        encryption_algorithm=serialization.NoEncryption()
-    )
-    with open(ed_priv_path, 'wb') as f:
-        f.write(priv_bytes)
-    logging.info(f"Ed25519 private key saved to {ed_priv_path}")
-
-    # 3. Generate Ed25519 public key
-    pub = priv.public_key()
-    pub_bytes = pub.public_bytes(
-        encoding=serialization.Encoding.PEM,
-        format=serialization.PublicFormat.SubjectPublicKeyInfo
-    )
-    with open(ed_pub_path, 'wb') as f:
-        f.write(pub_bytes)
-    logging.info(f"Ed25519 public key saved to {ed_pub_path}")
-
-
-def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
-    # Append date to each filename
-    aes_key_path = append_date_to_filename(aes_key_path)
-    ed_priv_path = append_date_to_filename(ed_priv_path)
-    output_hash_path = append_date_to_filename(output_hash_path)
-
-    try:
-        # Read AES key
-        with open(aes_key_path, 'rb') as f:
-            aes_bytes = f.read()
-        # Read Ed25519 private key
-        with open(ed_priv_path, 'rb') as f:
-            ed_priv_bytes = f.read()
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Key file not found: {e.filename}")
-    except Exception as e:
-        raise Exception(f"Error reading key files: {e}")
-
-    # Compute SHA-256 hash over combined bytes
-    sha = hashlib.sha256()
-    sha.update(aes_bytes)
-    sha.update(ed_priv_bytes)
-    digest_hex = sha.hexdigest()
-
-    # Save the hexadecimal digest to the output file
-    try:
-        with open(output_hash_path, 'w') as out:
-            out.write(digest_hex)
-    except Exception as e:
-        raise Exception(f"Error writing hash to file '{output_hash_path}': {e}")
-
-    logging.info(f"SHA-256 hash of combined keys written to: {output_hash_path}")
-
-
-def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
-    # Append date to each filename
-    aes_key_path = append_date_to_filename(aes_key_path)
-    ed_priv_path = append_date_to_filename(ed_priv_path)
-    output_zip_path = append_date_to_filename(output_zip_path)
-
-    # Check both input files exist
-    for path in (aes_key_path, ed_priv_path):
-        if not os.path.isfile(path):
-            raise FileNotFoundError(f"Key file not found: {path}")
-
-    # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_zip_path) or '.', exist_ok=True)
-
-    try:
-        with zipfile.ZipFile(output_zip_path, 'w', compression=zipfile.ZIP_DEFLATED) as zipf:
-            zipf.write(aes_key_path, arcname=os.path.basename(aes_key_path))
-            zipf.write(ed_priv_path, arcname=os.path.basename(ed_priv_path))
-        logging.info(f"Successfully created ZIP archive: {output_zip_path}")
-    except Exception as e:
-        raise Exception(f"Error creating ZIP file '{output_zip_path}': {e}")
-
-
-def verify_password(password: str, password_file_path: str) -> bool:
-    try:
-        with open(password_file_path, 'r', encoding='utf-8') as f:
-            valid_passwords = {line.strip() for line in f if line.strip()}
-        return password in valid_passwords
-    except FileNotFoundError:
-        logging.info(f"Password file not found: {password_file_path}")
-        return False
-    except Exception as e:
-        logging.info(f"Error reading password file: {e}")
-        return False
-
-
 @scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
 def daily_task():
     try:
-        generate_keys_and_hash(AES_KEY_PATH, ED_PRIV_PATH, ED_PUB_PATH)
-        generate_password(AES_KEY_PATH, ED_PRIV_PATH, PASS_PATH)
-        zip_keys(AES_KEY_PATH, ED_PRIV_PATH, ZIP_OUT_PATH)
+        KeySigServer.generate_keys_and_hash(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.ED_PUB_PATH)
+        KeySigServer.generate_password(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.PASS_PATH)
+        KeySigServer.zip_keys(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.ZIP_OUT_PATH)
     except Exception as e:
         logging.exception(f"Exception in daily_task: {e}")
 
 
 @app.route('/downloads', methods=['POST'])
-def get_file():
+def serve_KeySig():
     data = request.json
     if not data or 'password' not in data:
         return jsonify({'error': 'Password is required'}), 400
 
     client_password = data['password']
-    server_password = append_date_to_filename(PASS_PATH)
-    if not verify_password(client_password, server_password):
+    server_password = KeySigServer.append_date_to_filename(config.PASS_PATH)
+    if not KeySigServer.verify_password(client_password, server_password):
         return jsonify({'error': 'Invalid password'}), 403
 
     try:
-        keys_zip = append_date_to_filename(ZIP_OUT_PATH)
+        keys_zip = KeySigServer.append_date_to_filename(config.ZIP_OUT_PATH)
         return send_file(keys_zip, as_attachment=True)
     except Exception as e:
         import traceback
@@ -290,10 +160,11 @@ def get_file():
 
 
 @app.route("/heartbeat", methods=["POST"])
+# TODO: move this into its own .py file
 def heartbeat():
     """Receives and validates sensor heartbeat signals, logging them to file."""
     try:
-        data = decode_request_data(request.data)
+        data = KeySigServer.decode_request_data(request.data)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -304,7 +175,8 @@ def heartbeat():
     if not all([sensor_id, timestamp, signature]):
         return jsonify({"error": "Missing fields"}), 400
 
-    secret = SENSOR_DB.get(sensor_id)
+    # TODO: implement database for sensors 
+    secret = config.SENSOR_DB.get(sensor_id)
     if not secret:
         return jsonify({"error": "Unknown sensor"}), 403
 
@@ -315,7 +187,7 @@ def heartbeat():
         return jsonify({"error": "Invalid signature"}), 401
 
     # Log heartbeat to file
-    with open(HEARTBEAT_LOG_FILE, 'a', encoding='utf-8') as f:
+    with open(config.HEARTBEAT_LOG_FILE, 'a', encoding='utf-8') as f:
         log_entry = {
             'sensor_id': sensor_id,
             'timestamp': timestamp,
@@ -345,7 +217,8 @@ def captured_udp_packets():
     if not isinstance(received_packet_info_list, list):
         return jsonify({"error": "packet_info must be a list"}), 400
 
-    secret = SENSOR_DB.get(sensor_id)
+    # TODO: implement database for sensors
+    secret = config.SENSOR_DB.get(sensor_id)
     if not secret:
         return jsonify({"error": "Unknown sensor"}), 403
 
@@ -356,7 +229,7 @@ def captured_udp_packets():
         return jsonify({"error": "Invalid signature"}), 401
 
     try:
-        with open(UDP_TRAFFIC_LOG_FILE, 'a', encoding='utf-8') as f:
+        with open(config.UDP_TRAFFIC_LOG_FILE, 'a', encoding='utf-8') as f:
             for packet_info_item in received_packet_info_list:
                 payload_base64 = packet_info_item.get('payload', 'N/A')
                 decoded_payload_human_readable = "N/A (binary/unreadable)"
@@ -398,7 +271,7 @@ def captured_udp_packets():
 @app.route("/api/sensor_status", methods=["GET"])
 def get_sensor_status():
     """API endpoint to get the status of all registered sensors by reading from log file."""
-    all_heartbeats = read_jsonl_file(HEARTBEAT_LOG_FILE)
+    all_heartbeats = read_jsonl_file(config.HEARTBEAT_LOG_FILE)
     
     latest_heartbeats = {}
     # Iterate in reverse to find the most recent heartbeat for each sensor efficiently
@@ -411,7 +284,8 @@ def get_sensor_status():
     missed_sensors = {}
     current_time = datetime.now(timezone.utc)
 
-    for sensor_id in SENSOR_DB.keys():
+    # TODO: implement database for sensors
+    for sensor_id in config.SENSOR_DB.keys():
         last_heartbeat_entry = latest_heartbeats.get(sensor_id)
         
         status = "NO HEARTBEAT"
@@ -448,14 +322,14 @@ def get_sensor_status():
 @app.route("/api/dns_data", methods=["GET"])
 def get_dns_data():
     """API endpoint to get all collected DNS data by reading from log file."""
-    dns_data = read_jsonl_file(DNS_LOG_FILE)
+    dns_data = read_jsonl_file(config.DNS_LOG_FILE)
     return jsonify({"dns_data": dns_data})
 
 
 @app.route("/api/udp_packets", methods=["GET"])
 def get_udp_packets_data():
     """API endpoint to get all collected UDP packet details by reading from log file."""
-    udp_packets = read_jsonl_file(UDP_TRAFFIC_LOG_FILE)
+    udp_packets = read_jsonl_file(config.UDP_TRAFFIC_LOG_FILE)
     return jsonify({"udp_packets": udp_packets})
 
 

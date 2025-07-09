@@ -299,7 +299,7 @@ def upload_pdns_data(database_path, signature_file, key_file, pwd_file, upload_u
     }
 
     try:
-        response = requests.post(upload_url, data=pwd, files=files, proxies=proxies, timeout=30)
+        response = requests.post(upload_url, pwd, files, proxies, timeout=30)
         print(f"[+] Status Code: {response.status_code}")
         print(f"[+] Response: {response.text[:500]}")
     except requests.RequestException as e:
