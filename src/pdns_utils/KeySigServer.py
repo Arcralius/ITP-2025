@@ -3,6 +3,7 @@ from flask_apscheduler import APScheduler
 from datetime import datetime
 import logging
 import os
+import re
 import hashlib
 import zipfile
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -12,9 +13,8 @@ from cryptography.hazmat.primitives import serialization
 AES_KEY_PATH = "./aes.key"
 ED_PRIV_PATH = "./ed25519_private.pem"
 ED_PUB_PATH  = "./ed25519_public.pem"
-HASH_OUT_PATH= "./hash.txt"
+PWD_OUT_PATH = "./pwd.txt"
 ZIP_OUT_PATH = "./keys.zip"
-PASSWORD_PATH= ""
 
 
 logging.basicConfig(
@@ -38,7 +38,13 @@ if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
 def append_date_to_filename(path: str) -> str:
     base, ext = os.path.splitext(path)
     date_str = datetime.now().strftime("%Y%m%d")
-    return f"{base}_{date_str}{ext}"
+    
+    date_pattern = r'_\d{8}$'
+    
+    if re.search(date_pattern, base):
+        return path
+    else:
+        return f"{base}_{date_str}{ext}"
 
 
 def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: str):
@@ -135,10 +141,11 @@ def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
 def verify_password(password: str, password_file_path: str) -> bool:
     # TODO: right now it reads the password file as if it has multiple pwd genrated from multiple days, 
     # need to decide whether i want a file with pwd or 1 pwd 1 file
+    password_file_path = append_date_to_filename(password_file_path)
     try:
         with open(password_file_path, 'r', encoding='utf-8') as f:
-            valid_passwords = {line.strip() for line in f if line.strip()}
-        return password in valid_passwords
+            valid_password = f.read().strip()
+        return password == valid_password
     except FileNotFoundError:
         logging.info(f"Password file not found: {password_file_path}")
         return False
@@ -151,11 +158,8 @@ def verify_password(password: str, password_file_path: str) -> bool:
 def daily_task():
     try:
         generate_keys_and_hash(AES_KEY_PATH, ED_PRIV_PATH, ED_PUB_PATH)
-        generate_password(AES_KEY_PATH, ED_PRIV_PATH, HASH_OUT_PATH)
+        generate_password(AES_KEY_PATH, ED_PRIV_PATH, PWD_OUT_PATH)
         zip_keys(AES_KEY_PATH, ED_PRIV_PATH, ZIP_OUT_PATH)
-
-        global PASSWORD_PATH
-        PASSWORD_PATH = append_date_to_filename(HASH_OUT_PATH)
     except Exception as e:
         logging.exception(f"Exception in daily_task: {e}")
 
@@ -167,7 +171,7 @@ def get_file():
         return jsonify({'error': 'Password is required'}), 400
 
     password = data['password']
-    if not verify_password(password, PASSWORD_PATH):
+    if not verify_password(password, PWD_OUT_PATH):
         return jsonify({'error': 'Invalid password'}), 403
 
     try:

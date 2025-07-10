@@ -13,8 +13,7 @@ import logging
 import sqlite3
 import uuid 
 import config
-from encryptionKeyAndDigitalSignature import KeySigServer
-from database import database as db
+from pdns_utils import KeySigServer, database as db
 
 app = Flask(__name__)
 scheduler = APScheduler()
@@ -23,12 +22,6 @@ try:
     scheduler.start()
 except Exception as e:
     raise Exception(f"Error with the scheduler: {e}")
-# if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-#     # Only start scheduler in the reloader's child process
-#     scheduler.start()
-
-
-# --- Build All File Paths from Config ---
 
 # --- Initialize Application (e.g., create directories) ---
 os.makedirs(config.LOG_DIR, exist_ok=True)
@@ -130,7 +123,6 @@ def daily_task():
         KeySigServer.generate_keys_and_hash(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.ED_PUB_FILENAME)
         KeySigServer.generate_password(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.PASS_FILENAME)
         KeySigServer.zip_keys(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.ZIP_FILENAME)
-        logging.info("Daily task started successfully")
     except Exception as e:
         logging.exception(f"Exception in daily_task: {e}")
 
@@ -142,7 +134,9 @@ def serve_KeySig():
         return jsonify({'error': 'Password is required'}), 400
 
     client_password = data['password']
-    server_password = KeySigServer.append_date_to_filename(config.PASS_PATH)
+    server_pwd_path = KeySigServer.append_date_to_filename(config.PASS_PATH)
+    with open(server_pwd_path, 'r', encoding='utf-8') as f:
+            server_password = f.read().strip()  
     if not KeySigServer.verify_password(client_password, server_password):
         return jsonify({'error': 'Invalid password'}), 403
 
@@ -172,11 +166,11 @@ def heartbeat():
         return jsonify({"error": "Missing fields"}), 400
     
     if db.guid_exists(sensor_id, config.DATABASE):
-        with open(config.PASS_FILENAME, 'r', encoding='utf-8'):
+        with open(config.PASS_FILENAME, 'r', encoding='utf-8') as f:
             password = f.readline().strip()
-            message = f"{sensor_id}|{timestamp}"
-            expected_signature = hmac.new(password.encode(), message.encode(), hashlib.sha256).hexdigest()
-
+    
+    message = f"{sensor_id}|{timestamp}"
+    expected_signature = hmac.new(password.encode(), message.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected_signature):
         return jsonify({"error": "Invalid signature"}), 401
 
