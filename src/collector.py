@@ -10,33 +10,29 @@ import json
 import base64
 from flask_apscheduler import APScheduler
 import logging
-
+import sqlite3
+import uuid 
 import config
 from encryptionKeyAndDigitalSignature import KeySigServer
+from database import database as db
 
 app = Flask(__name__)
 scheduler = APScheduler()
 scheduler.init_app(app)
-if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
-    # Only start scheduler in the reloader's child process
+try:
     scheduler.start()
+except Exception as e:
+    raise Exception(f"Error with the scheduler: {e}")
+# if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+#     # Only start scheduler in the reloader's child process
+#     scheduler.start()
 
 
 # --- Build All File Paths from Config ---
-heartbeat_log_path = os.path.join(config.LOG_DIR, config.HEARTBEAT_LOG_FILE)
-dns_log_path = os.path.join(config.LOG_DIR, config.DNS_LOG_FILE)
-udp_log_path = os.path.join(config.LOG_DIR, config.UDP_TRAFFIC_LOG_FILE)
-
-aes_key_path = os.path.join(config.KEY_STORE_DIR, config.AES_KEY_FILENAME)
-ed_priv_path = os.path.join(config.KEY_STORE_DIR, config.ED_PRIV_FILENAME)
-ed_pub_path = os.path.join(config.KEY_STORE_DIR, config.ED_PUB_FILENAME)
-pass_path = os.path.join(config.KEY_STORE_DIR, config.PASS_FILENAME)
-zip_out_path = os.path.join(config.KEY_STORE_DIR, config.ZIP_FILENAME)
 
 # --- Initialize Application (e.g., create directories) ---
 os.makedirs(config.LOG_DIR, exist_ok=True)
 os.makedirs(config.KEY_STORE_DIR, exist_ok=True)
-
 
 # --- Helper for decoding incoming Base64 JSON payloads ---
 def decode_request_data(request_data):
@@ -131,9 +127,10 @@ def run_udp_dns_server():
 @scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
 def daily_task():
     try:
-        KeySigServer.generate_keys_and_hash(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.ED_PUB_PATH)
-        KeySigServer.generate_password(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.PASS_PATH)
-        KeySigServer.zip_keys(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.ZIP_OUT_PATH)
+        KeySigServer.generate_keys_and_hash(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.ED_PUB_FILENAME)
+        KeySigServer.generate_password(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.PASS_FILENAME)
+        KeySigServer.zip_keys(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.ZIP_FILENAME)
+        logging.info("Daily task started successfully")
     except Exception as e:
         logging.exception(f"Exception in daily_task: {e}")
 
@@ -160,7 +157,6 @@ def serve_KeySig():
 
 
 @app.route("/heartbeat", methods=["POST"])
-# TODO: move this into its own .py file
 def heartbeat():
     """Receives and validates sensor heartbeat signals, logging them to file."""
     try:
@@ -174,14 +170,12 @@ def heartbeat():
 
     if not all([sensor_id, timestamp, signature]):
         return jsonify({"error": "Missing fields"}), 400
-
-    # TODO: implement database for sensors 
-    secret = config.SENSOR_DB.get(sensor_id)
-    if not secret:
-        return jsonify({"error": "Unknown sensor"}), 403
-
-    message = f"{sensor_id}|{timestamp}"
-    expected_signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+    
+    if db.guid_exists(sensor_id, config.DATABASE):
+        with open(config.PASS_FILENAME, 'r', encoding='utf-8'):
+            password = f.readline().strip()
+            message = f"{sensor_id}|{timestamp}"
+            expected_signature = hmac.new(password.encode(), message.encode(), hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(signature, expected_signature):
         return jsonify({"error": "Invalid signature"}), 401
@@ -393,9 +387,128 @@ def collect_data():
     return "Data collected" if new_data_added else "No new data", 200
 
 
+@app.route('/users', methods=['GET'])
+def userdata():
+    """
+    Renders the index.html template which contains the DataTables table.
+    """
+    return render_template('userdata.html')
+
+
+# API endpoint to get all user data
+@app.route('/api/users', methods=['GET'])
+def get_users():
+    """
+    Fetches user data from the SQLite database and returns it as JSON.
+    This endpoint will be used by DataTables via AJAX.
+    Includes the 'id' for CRUD operations.
+    """
+    conn = db.get_db_connection(config.DATABASE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT id, username, password, guid FROM users')
+    users = cursor.fetchall()
+    conn.close()
+
+    users_list = []
+    for user in users:
+        users_list.append(dict(user))
+
+    return jsonify({"data": users_list})
+
+
+# API endpoint to add a new user
+@app.route('/api/users', methods=['POST'])
+def add_user():
+    """
+    Adds a new user to the database.
+    Expects JSON data with 'username' and 'password'.
+    GUID is auto-generated.
+    """
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    guid = str(uuid.uuid4()) # Generate a new GUID
+
+    if not username or not password:
+        return jsonify({"success": False, "message": "Username and password are required."}), 400
+
+    conn = db.get_db_connection(config.DATABASE)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO users (username, password, guid) VALUES (?, ?, ?)", (username, password, guid))
+        conn.commit()
+        new_user_id = cursor.lastrowid
+        return jsonify({"success": True, "message": "User added successfully.", "id": new_user_id, "guid": guid}), 201
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return jsonify({"success": False, "message": "Username already exists."}), 409
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"success": False, "message": f"Database error: {str(e)}"}), 500
+    finally:
+        conn.close()
+
+
+# API endpoint to update an existing user
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+def update_user(user_id):
+    """
+    Updates an existing user in the database.
+    Expects JSON data with 'username' and 'password'.
+    GUID is not updated.
+    """
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+
+    if not username or not password:
+        return jsonify({"success": False, "message": "Username and password are required."}), 400
+
+    conn = db.get_db_connection(config.DATABASE)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET username = ?, password = ? WHERE id = ?", (username, password, user_id))
+        conn.commit()
+        if cursor.rowcount == 0:
+            return jsonify({"success": False, "message": "User not found."}), 404
+        return jsonify({"success": True, "message": "User updated successfully."}), 200
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        return jsonify({"success": False, "message": "Username already exists."}), 409
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"success": False, "message": f"Database error: {str(e)}"}), 500
+    finally:
+        conn.close()
+
+
+# API endpoint to delete a user
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+def delete_user(user_id):
+    """
+    Deletes a user from the database.
+    """
+    conn = db.get_db_connection(config.DATABASE)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        conn.commit()
+        if cursor.rowcount == 0:
+            return jsonify({"success": False, "message": "User not found."}), 404
+        return jsonify({"success": True, "message": "User deleted successfully."}), 200
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"success": False, "message": f"Database error: {str(e)}"}), 500
+    finally:
+        conn.close()
+
+
 if __name__ == '__main__':
     # Start UDP DNS server in a separate daemon thread
     udp_dns_thread = threading.Thread(target=run_udp_dns_server, daemon=True)
     udp_dns_thread.start()
+    
+    # init database
+    db.init_db(config.DATABASE)
 
     app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)

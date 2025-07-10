@@ -133,6 +133,8 @@ def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
 
 
 def verify_password(password: str, password_file_path: str) -> bool:
+    # TODO: right now it reads the password file as if it has multiple pwd genrated from multiple days, 
+    # need to decide whether i want a file with pwd or 1 pwd 1 file
     try:
         with open(password_file_path, 'r', encoding='utf-8') as f:
             valid_passwords = {line.strip() for line in f if line.strip()}
