@@ -1,20 +1,24 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, send_file, jsonify, session, flash, url_for, redirect
+from functools import wraps
 from flask_apscheduler import APScheduler
 from datetime import datetime
 import logging
 import os
 import re
+import time
 import hashlib
 import zipfile
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
+from werkzeug.exceptions import RequestEntityTooLarge
+import config
 
 
-AES_KEY_PATH = "./aes.key"
-ED_PRIV_PATH = "./ed25519_private.pem"
-ED_PUB_PATH  = "./ed25519_public.pem"
-PWD_OUT_PATH = "./pwd.txt"
-ZIP_OUT_PATH = "./keys.zip"
+AES_KEY_PATH = config.AES_KEY_FILENAME
+ED_PRIV_PATH = config.ED_PRIV_FILENAME
+ED_PUB_PATH  = config.ED_PUB_FILENAME
+PWD_OUT_PATH = config.PASS_FILENAME
+ZIP_OUT_PATH = config.ZIP_FILENAME
 
 
 logging.basicConfig(
@@ -166,22 +170,97 @@ def daily_task():
 
 @app.route('/download', methods=['POST'])
 def get_file():
-    data = request.json
-    if not data or 'password' not in data:
-        return jsonify({'error': 'Password is required'}), 400
-
-    password = data['password']
-    if not verify_password(password, PWD_OUT_PATH):
-        return jsonify({'error': 'Invalid password'}), 403
-
+    # 1. Input validation and sanitization
     try:
-        file = append_date_to_filename(ZIP_OUT_PATH)
-        return send_file(file, as_attachment=True)
+        # Check content type
+        if not request.is_json:
+            return jsonify({'error': 'Content-Type must be application/json'}), 400
+        
+        # Get and validate JSON data
+        data = request.get_json(force=False, silent=False)
+        if not data:
+            return jsonify({'error': 'Invalid JSON data'}), 400
+            
+    except RequestEntityTooLarge:
+        return jsonify({'error': 'Request payload too large'}), 413
+    except Exception:
+        return jsonify({'error': 'Invalid request format'}), 400
+    
+    # 2. Password validation
+    if 'password' not in data:
+        return jsonify({'error': 'Password is required'}), 400
+    
+    password = data.get('password')
+    if not isinstance(password, str) or len(password.strip()) == 0 or len(password) > 1000:
+        return jsonify({'error': 'Invalid password'}), 400
+    
+    # 3. Authentication with timing attack protection
+    try:
+        if not verify_kex_password(password, PWD_OUT_PATH):
+            # Add small delay to prevent timing attacks
+            time.sleep(0.1)
+            return jsonify({'error': 'Invalid credentials'}), 401
+    except FileNotFoundError:
+        logging.error(f"Password file not found: {PWD_OUT_PATH}")
+        return jsonify({'error': 'Authentication service unavailable'}), 503
     except Exception as e:
-        import traceback
-        logging.error("Exception occurred:", e)
-        traceback.print_exc()
-        return jsonify({'error': str(e)}), 500
+        logging.error(f"Password verification failed: {str(e)}")
+        return jsonify({'error': 'Authentication failed'}), 500
+    
+    # 4. File handling with comprehensive error checking
+    try:
+        # Validate ZIP_OUT_PATH exists and is readable
+        if not os.path.exists(ZIP_OUT_PATH):
+            logging.error(f"Source file not found: {ZIP_OUT_PATH}")
+            return jsonify({'error': 'Requested file not available'}), 404
+        
+        if not os.access(ZIP_OUT_PATH, os.R_OK):
+            logging.error(f"Source file not readable: {ZIP_OUT_PATH}")
+            return jsonify({'error': 'File access denied'}), 403
+        
+        # Generate the file with date
+        file_path = append_date_to_filename(ZIP_OUT_PATH)
+        
+        # Validate generated file path
+        if not file_path or not os.path.exists(file_path):
+            logging.error(f"Generated file not found: {file_path}")
+            return jsonify({'error': 'File generation failed'}), 500
+        
+        # Security: Ensure file is within expected directory
+        real_file_path = os.path.realpath(file_path)
+        expected_dir = os.path.realpath(os.path.dirname(ZIP_OUT_PATH))
+        if not real_file_path.startswith(expected_dir):
+            logging.error(f"Path traversal attempt detected: {file_path}")
+            return jsonify({'error': 'Access denied'}), 403
+        
+        # Check file size (prevent serving extremely large files)
+        file_size = os.path.getsize(file_path)
+        max_file_size = 100 * 1024 * 1024  # 100MB limit
+        if file_size > max_file_size:
+            logging.error(f"File too large: {file_size} bytes")
+            return jsonify({'error': 'File too large'}), 413
+        
+        # Log successful download attempt
+        client_ip = request.environ.get('HTTP_X_FORWARDED_FOR', request.remote_addr)
+        logging.info(f"File download initiated by {client_ip}, file: {file_path}")
+        
+        return send_file(
+            file_path, 
+            as_attachment=True,
+            download_name=os.path.basename(file_path),
+            mimetype='application/zip'
+        )
+        
+    except PermissionError:
+        logging.error(f"Permission denied accessing file: {ZIP_OUT_PATH}")
+        return jsonify({'error': 'File access denied'}), 403
+    except OSError as e:
+        logging.error(f"OS error accessing file: {str(e)}")
+        return jsonify({'error': 'File system error'}), 500
+    except Exception as e:
+        # Don't expose internal error details
+        logging.error(f"Unexpected error in file download: {str(e)}", exc_info=True)
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 if __name__ == '__main__':

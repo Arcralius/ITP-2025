@@ -1,4 +1,5 @@
-from flask import Flask, request, render_template, jsonify, send_file
+from flask import Flask, request, render_template, jsonify, send_file, flash, session, redirect, url_for
+from functools import wraps
 from collections import defaultdict
 import hmac
 import hashlib
@@ -99,7 +100,7 @@ def run_udp_dns_server():
                     continue
                 
                 # Log DNS data to file instead of in-memory list
-                with open(config.DNS_LOG_FILE, 'a', encoding='utf-8') as f:
+                with open(config.DNS_LOG_PATH, 'a', encoding='utf-8') as f:
                     log_entry = {
                         'sensor_id': sensor_id,
                         'timestamp': timestamp,
@@ -120,9 +121,9 @@ def run_udp_dns_server():
 @scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
 def daily_task():
     try:
-        KeySigServer.generate_keys_and_hash(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.ED_PUB_FILENAME)
-        KeySigServer.generate_password(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.PASS_FILENAME)
-        KeySigServer.zip_keys(config.AES_KEY_FILENAME, config.ED_PRIV_FILENAME, config.ZIP_FILENAME)
+        KeySigServer.generate_keys_and_hash(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.ED_PUB_PATH)
+        KeySigServer.generate_password(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.PASS_PATH)
+        KeySigServer.zip_keys(config.AES_KEY_PATH, config.ED_PRIV_PATH, config.ZIP_PATH)
     except Exception as e:
         logging.exception(f"Exception in daily_task: {e}")
 
@@ -166,7 +167,7 @@ def heartbeat():
         return jsonify({"error": "Missing fields"}), 400
     
     if db.guid_exists(sensor_id, config.DATABASE):
-        with open(config.PASS_FILENAME, 'r', encoding='utf-8') as f:
+        with open(config.PASS_PATH, 'r', encoding='utf-8') as f:
             password = f.readline().strip()
     
     message = f"{sensor_id}|{timestamp}"
@@ -381,21 +382,99 @@ def collect_data():
     return "Data collected" if new_data_added else "No new data", 200
 
 
-@app.route('/users', methods=['GET'])
+# TODO: add api documentation and data security and validation
+# https://swagger.io/docs/ use this to document apis used
+def admin_required(f):
+    """Decorator to require admin authentication for routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('admin_logged_in'):
+            flash('Please log in to access the admin panel.', 'error')
+            return redirect(url_for('admin_login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+def authenticate_admin(username, password):
+    """Authenticate admin credentials against the database"""
+    if username != 'admin':
+        return False
+    conn = None
+    try:
+        conn = db.get_db_connection(config.DATABASE)
+        cursor = conn.cursor()
+        cursor.execute("SELECT username, password FROM users WHERE username = ?", (username,))
+        user = cursor.fetchone()
+        
+        actual_pwd = user['password']
+        salt = actual_pwd[:32]
+        stored_hash = actual_pwd[32:]
+        password_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100_000)
+
+        if user and password_hash == stored_hash:
+            return True
+        return False
+        
+    except sqlite3.Error as e:
+        print(f"Database error during authentication: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+@app.route('/admin/login', methods=['GET', 'POST'])
+def admin_login():
+    """
+    Admin login page handler.
+    GET: Display login form
+    POST: Process login credentials
+    """
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '')
+       
+        # Validate credentials against database
+        if authenticate_admin(username, password):
+            session['admin_logged_in'] = True
+            session['admin_username'] = username
+            flash('Successfully logged in!', 'success')
+           
+            # Redirect to intended page or user management
+            next_page = request.args.get('next')
+            return redirect(next_page or url_for('userdata'))
+        else:
+            flash('Invalid username or password. Please try again.', 'error')
+   
+    return render_template('admin_login.html')
+
+
+@app.route('/admin/logout')
+def admin_logout():
+    """
+    Admin logout handler.
+    Clears session and redirects to login page.
+    """
+    session.pop('admin_logged_in', None)
+    session.pop('admin_username', None)
+    flash('You have been logged out successfully.', 'success')
+    return redirect(url_for('admin_login'))
+
+
+@app.route('/admin/users', methods=['GET'])
+@admin_required
 def userdata():
-    """
-    Renders the index.html template which contains the DataTables table.
-    """
     return render_template('userdata.html')
 
 
-# API endpoint to get all user data
 @app.route('/api/users', methods=['GET'])
+@admin_required
 def get_users():
     """
     Fetches user data from the SQLite database and returns it as JSON.
     This endpoint will be used by DataTables via AJAX.
     Includes the 'id' for CRUD operations.
+    Now requires admin authentication.
     """
     conn = db.get_db_connection(config.DATABASE)
     cursor = conn.cursor()
@@ -405,27 +484,31 @@ def get_users():
 
     users_list = []
     for user in users:
-        users_list.append(dict(user))
+        user_dict = dict(user)
+        user_dict['password'] = base64.b64encode(user_dict['password']).decode('utf-8')
+        users_list.append(user_dict)
 
     return jsonify({"data": users_list})
 
 
-# API endpoint to add a new user
 @app.route('/api/users', methods=['POST'])
+@admin_required
 def add_user():
     """
     Adds a new user to the database.
     Expects JSON data with 'username' and 'password'.
     GUID is auto-generated.
+    Now requires admin authentication.
     """
     data = request.get_json()
     username = data.get('username')
     password = data.get('password')
-    guid = str(uuid.uuid4()) # Generate a new GUID
+    guid = str(uuid.uuid4())
 
     if not username or not password:
         return jsonify({"success": False, "message": "Username and password are required."}), 400
 
+    password = db.generate_password_hash(password)
     conn = db.get_db_connection(config.DATABASE)
     try:
         cursor = conn.cursor()
@@ -443,13 +526,14 @@ def add_user():
         conn.close()
 
 
-# API endpoint to update an existing user
 @app.route('/api/users/<int:user_id>', methods=['PUT'])
+@admin_required
 def update_user(user_id):
     """
     Updates an existing user in the database.
     Expects JSON data with 'username' and 'password'.
     GUID is not updated.
+    Now requires admin authentication.
     """
     data = request.get_json()
     username = data.get('username')
@@ -458,6 +542,7 @@ def update_user(user_id):
     if not username or not password:
         return jsonify({"success": False, "message": "Username and password are required."}), 400
 
+    password = db.generate_password_hash(password)
     conn = db.get_db_connection(config.DATABASE)
     try:
         cursor = conn.cursor()
@@ -476,11 +561,12 @@ def update_user(user_id):
         conn.close()
 
 
-# API endpoint to delete a user
 @app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@admin_required
 def delete_user(user_id):
     """
     Deletes a user from the database.
+    Now requires admin authentication.
     """
     conn = db.get_db_connection(config.DATABASE)
     try:
@@ -505,4 +591,5 @@ if __name__ == '__main__':
     # init database
     db.init_db(config.DATABASE)
 
+    app.secret_key = os.urandom(24)  
     app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
