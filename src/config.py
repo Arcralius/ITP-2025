@@ -25,7 +25,7 @@ ZIP_PATH = os.path.join(KEY_STORE_DIR, ZIP_FILENAME)
 
 # --- Database Configuration ---
 USER_DATABASE = "user.db"
-HB_DATABASE = "hb.db"
+PRIVACYSHIELD_DATABASE = "ps.db"
 PDNS_DATABASE = "pdns.db"
 
 # --- Network Configuration ---

@@ -46,9 +46,11 @@ def generate_signature(sensor_id, timestamp, secret):
     message = f"{sensor_id}|{timestamp}"
     return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
+
 def generate_random_ip():
     """Generates a random IPv4 address string."""
     return ".".join(str(random.randint(1, 254)) for _ in range(4))
+
 
 def send_heartbeat():
     """Sends a signed heartbeat signal to the server."""
@@ -68,6 +70,7 @@ def send_heartbeat():
         print(f"[Heartbeat] Sent at {timestamp} | Status: {response.status_code} | Response: {response.text}")
     except requests.exceptions.RequestException as e:
         print(f"[Heartbeat Error] Error sending heartbeat: {e}")
+
 
 def send_dns_data(dns_data_list):
     """Sends a list of collected DNS queries to the server via UDP."""
@@ -92,6 +95,7 @@ def send_dns_data(dns_data_list):
             print(f"[DNS Data UDP] Sent {len(dns_data_list)} queries at {timestamp} to {UDP_DNS_TARGET_IP}:{UDP_DNS_TARGET_PORT}")
     except Exception as e:
         print(f"[DNS Data UDP Error] Error sending DNS data via UDP: {e}")
+
 
 def send_captured_udp_data(udp_packet_info_list):
     """

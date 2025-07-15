@@ -1,331 +1,190 @@
-import socket
-import time
-import hmac
-import hashlib
-import requests
-from datetime import datetime
-
-import requests
-import os
-from Crypto.Signature import eddsa
-from Crypto.PublicKey import ECC
-from Crypto.Hash import SHA512
-from Crypto.Random import get_random_bytes
-from zipfile import ZipFile, BadZipFile
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
-import logging
-
-from scapy.all import sniff, UDP, Raw
-import tempfile
+# Standard library imports
+import hmac, os, socket, sqlite3, tempfile, time
+from datetime import UTC, datetime
 import config
+from flask import Flask, jsonify, render_template, request
+from flask_apscheduler import APScheduler
+from pdns_utils import client, database as db
 
 
-def send_heartbeat(sensor_id, secret, heartbeat_url):
-    timestamp = datetime.isoformat()
-    message = f"{sensor_id}|{timestamp}"
-    signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
+# TODO: endpoint to download pdns data from sensors
+# --- Server Configuration ---
+app = Flask(__name__)
+SHARED_SECRET = "supersecretkey123" # temp
 
-    payload = {
-        "sensor_id": config.SENSOR_ID,
-        "timestamp": timestamp,
-        "signature": signature
-    }
+# --- Flask Routes ---
+@app.route('/', methods=['GET'])
+def dashboard():
+    """Renders the main dashboard, displaying data from all tables."""
+    try:
+        with sqlite3.connect(config.PRIVACYSHIELD_DATABASE) as conn:
+            conn.row_factory = sqlite3.Row # This allows accessing columns by name
+            cursor = conn.cursor()
+
+            # Fetch all data from each table
+            cursor.execute("SELECT * FROM heartbeats ORDER BY received_at DESC")
+            heartbeats = cursor.fetchall()
+
+            cursor.execute("SELECT * FROM dns_queries ORDER BY received_at DESC")
+            dns_queries = cursor.fetchall()
+
+            cursor.execute("SELECT * FROM udp_packets ORDER BY received_at DESC")
+            udp_packets = cursor.fetchall()
+
+        # Render the HTML template with the fetched data
+        return render_template('dashboard.html', heartbeats=heartbeats, dns_queries=dns_queries, udp_packets=udp_packets)
+    except sqlite3.Error as e:
+        print(f"[Dashboard Error] Could not fetch data for dashboard: {e}")
+        return "<h1>Error</h1><p>Could not connect to the database to fetch data.</p>", 500
+
+@app.route('/heartbeat', methods=['POST'])
+def handle_heartbeat():
+    """Receives, validates, and stores heartbeat signals."""
+    payload = client.validate_request(request.data, SHARED_SECRET)
+    if not payload:
+        return jsonify({"status": "error", "message": "Invalid request"}), 403
 
     try:
-        response = requests.post(heartbeat_url, json=payload)
-        print(f"Sent heartbeat at {timestamp} | Status: {response.status_code}")
-    except Exception as e:
-        print(f"Error sending heartbeat: {e}")
+        with sqlite3.connect(config.PRIVACYSHIELD_DATABASE) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO heartbeats (sensor_id, timestamp, received_at) VALUES (?, ?, ?)",
+                (payload['sensor_id'], payload['timestamp'], datetime.now(UTC).isoformat())
+            )
+            conn.commit()
+        print(f"[Heartbeat] Received and stored heartbeat from {payload['sensor_id']}")
+        return jsonify({"status": "success", "message": "Heartbeat received"}), 200
+    except sqlite3.Error as e:
+        print(f"[Database Error] Could not store heartbeat: {e}")
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
+@app.route('/dns_data', methods=['POST'])
+def handle_dns_data():
+    """Receives, validates, and stores captured DNS query data."""
+    payload = client.validate_request(request.data, SHARED_SECRET)
+    if not payload:
+        return jsonify({"status": "error", "message": "Invalid request"}), 403
 
-def append_date_to_filename(path: str) -> str:
-    base, ext = os.path.splitext(path)
-    date_str = datetime.now().strftime("%Y%m%d")
-    return f"{base}_{date_str}{ext}"
+    dns_queries = payload.get("dns_queries", [])
+    if not dns_queries:
+        return jsonify({"status": "warn", "message": "No DNS queries in payload"}), 400
 
-
-def download_sig_and_key(download_url: str, password: str, output_dir: str, verify_ssl: bool = True):
     try:
-        # Prepare the POST data
-        data = {'password': password}
+        with sqlite3.connect(config.PRIVACYSHIELD_DATABASE) as conn:
+            cursor = conn.cursor()
+            received_at = datetime.now(UTC).isoformat()
+            for query in dns_queries:
+                cursor.execute(
+                    """
+                    INSERT INTO dns_queries (sensor_id, timestamp, domain, resolved_ip, status, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload['sensor_id'],
+                        payload['timestamp'],
+                        query.get('domain'),
+                        query.get('resolved_ip'),
+                        query.get('status'),
+                        received_at
+                    )
+                )
+            conn.commit()
+        print(f"[DNS Data] Stored {len(dns_queries)} DNS records from {payload['sensor_id']}")
+        return jsonify({"status": "success", "message": f"Stored {len(dns_queries)} DNS records"}), 200
+    except sqlite3.Error as e:
+        print(f"[Database Error] Could not store DNS data: {e}")
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
-        # Send the POST request
-        response = requests.post(download_url, json=data, stream=True, verify=verify_ssl)
-        response.raise_for_status()  # Raise an error for bad status codes
+@app.route('/captured_udp_packets', methods=['POST'])
+def handle_captured_udp():
+    """Receives, validates, and stores general UDP packet information."""
+    payload = client.validate_request(request.data, SHARED_SECRET)
+    if not payload:
+        return jsonify({"status": "error", "message": "Invalid request"}), 403
 
-        # Ensure the output directory exists
-        os.makedirs(output_dir, exist_ok=True)
+    packet_info_list = payload.get("packet_info", [])
+    if not packet_info_list:
+        return jsonify({"status": "warn", "message": "No packet info in payload"}), 400
 
-        # Define the path for the downloaded ZIP file
-        zip_path = os.path.join(output_dir, config.ZIP_NAME)
-
-        # Write the response content to the ZIP file
-        with open(zip_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-
-        print(f"ZIP file downloaded and saved to: {zip_path}")
-
-        # Extract the ZIP file
-        with ZipFile(zip_path, 'r') as zip_ref:
-            zip_ref.extractall(output_dir)
-            print(f"Files extracted to: {output_dir}")
-
-    except requests.exceptions.SSLError as ssl_err:
-        print(f"SSL error occurred: {ssl_err}")
-    except requests.exceptions.HTTPError as http_err:
-        print(f"HTTP error occurred: {http_err}")
-    except requests.exceptions.RequestException as req_err:
-        print(f"Request error occurred: {req_err}")
-    except BadZipFile as zip_err:
-        print(f"Error extracting ZIP file: {zip_err}")
-    except Exception as err:
-        print(f"An unexpected error occurred: {err}")
-
-
-def sign_and_package_file(file_to_sign: str, signature_file: str, output_path: str):
     try:
-        # Load the private key for signing
-        try:
-            with open('private_key.pem', 'rb') as key_file:
-                private_key = ECC.import_key(key_file.read())
-        except FileNotFoundError:
-            raise FileNotFoundError("Private key file 'private_key.pem' not found.")
-        except Exception as e:
-            raise Exception(f"Error loading private key: {e}")
+        with sqlite3.connect(config.PRIVACYSHIELD_DATABASE) as conn:
+            cursor = conn.cursor()
+            received_at = datetime.now(UTC).isoformat()
+            for packet in packet_info_list:
+                cursor.execute(
+                    """
+                    INSERT INTO udp_packets (sensor_id, timestamp, src_ip, dst_ip, src_port, dst_port, payload_base64, received_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload['sensor_id'],
+                        payload['timestamp'],
+                        packet.get('src_ip'),
+                        packet.get('dst_ip'),
+                        packet.get('src_port'),
+                        packet.get('dst_port'),
+                        packet.get('payload'),
+                        received_at
+                    )
+                )
+            conn.commit()
+        print(f"[UDP Data] Stored {len(packet_info_list)} UDP packet details from {payload['sensor_id']}")
+        return jsonify({"status": "success", "message": f"Stored {len(packet_info_list)} packet details"}), 200
+    except sqlite3.Error as e:
+        print(f"[Database Error] Could not store UDP packet data: {e}")
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
-        # Prepare the file to be signed
-        try:
-            with open(file_to_sign, 'rb') as f:
-                file_data = f.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"File to sign '{file_to_sign}' not found.")
-        except Exception as e:
-            raise Exception(f"Error reading file to sign: {e}")
+@app.route('/secret', methods=['GET'])
+def get_secret():
+    """Provides the shared secret to authenticated clients."""
+    # For this GET request, we expect auth info in headers
+    sensor_id = request.headers.get('X-Sensor-ID')
+    timestamp = request.headers.get('X-Timestamp')
+    client_signature = request.headers.get('X-Signature')
 
-        # Create the signature
-        try:
-            signer = eddsa.new(private_key)
-            h = SHA512.new(file_data)
-            signature = signer.sign(h)
-        except Exception as e:
-            raise Exception(f"Error signing the file: {e}")
+    if not all([sensor_id, timestamp, client_signature]):
+        print("[Secret Route Error] Missing authentication headers.")
+        return jsonify({"status": "error", "message": "Missing authentication headers"}), 400
 
-        # Save the signature to the specified file
-        try:
-            with open(signature_file, 'wb') as sig_file:
-                sig_file.write(signature)
-        except Exception as e:
-            raise Exception(f"Error writing signature to file '{signature_file}': {e}")
-
-        # Package the file and signature into a ZIP archive
-        try:
-            with ZipFile(output_path, 'w') as zipf:
-                zipf.write(file_to_sign, os.path.basename(file_to_sign))
-                zipf.write(signature_file, os.path.basename(signature_file))
-        except Exception as e:
-            raise Exception(f"Error creating ZIP archive '{output_path}': {e}")
-
-        print(f"File signed and packaged successfully. Output saved to: {output_path}")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-
-def encrypt_file(file_to_encrypt: str, key_file: str, output_path: str):
-    try:
-        # Read the AES key from the specified file
-        try:
-            with open(key_file, 'rb') as key_file:
-                aes_key = key_file.read()
-                if len(aes_key) != 32:
-                    raise ValueError("AES key must be 256 bits (32 bytes).")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Key file not found: {key_file}")
-        except Exception as e:
-            raise Exception(f"Error reading key file: {e}")
-
-        # Generate a random IV (Initialization Vector)
-        iv = get_random_bytes(AES.block_size)
-
-        # Create AES cipher instance
-        cipher = AES.new(aes_key, AES.MODE_CBC, iv)
-
-        # Read the file to encrypt
-        try:
-            with open(file_to_encrypt, 'rb') as f:
-                plaintext = f.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"File to encrypt not found: {file_to_encrypt}")
-        except Exception as e:
-            raise Exception(f"Error reading file to encrypt: {e}")
-
-        # Pad the plaintext to be a multiple of AES.block_size
-        padded_data = pad(plaintext, AES.block_size)
-
-        # Encrypt the padded data
-        ciphertext = cipher.encrypt(padded_data)
-
-        # Write the IV and ciphertext to the output file
-        try:
-            with open(output_path, 'wb') as out_file:
-                out_file.write(iv)  # Prepend the IV to the ciphertext
-                out_file.write(ciphertext)
-            print(f"File encrypted successfully. Encrypted file saved to: {output_path}")
-        except Exception as e:
-            raise Exception(f"Error writing encrypted file: {e}")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
+    # Validate the signature using the current secret
+    # TODO: implement daily changed password
+    server_signature = client.generate_signature(sensor_id, timestamp, SHARED_SECRET)
+    if hmac.compare_digest(server_signature, client_signature):
+        print(f"[Secret Route] Validated request from {sensor_id}. Serving secret.")
+        return jsonify({"shared_secret": SHARED_SECRET}), 200
+    else:
+        print(f"[Secret Route Error] Invalid signature from {sensor_id}.")
+        return jsonify({"status": "error", "message": "Invalid signature"}), 403
 
 
-def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
-    try:
-        # Read AES key
-        with open(aes_key_path, 'rb') as f:
-            aes_bytes = f.read()
-        # Read Ed25519 private key
-        with open(ed_priv_path, 'rb') as f:
-            ed_priv_bytes = f.read()
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Key file not found: {e.filename}")
-    except Exception as e:
-        raise Exception(f"Error reading key files: {e}")
-
-    # Compute SHA-256 hash over combined bytes
-    sha = hashlib.sha256()
-    sha.update(aes_bytes)
-    sha.update(ed_priv_bytes)
-    digest_hex = sha.hexdigest()
-
-    # Save the hexadecimal digest to the output file
-    try:
-        with open(output_hash_path, 'w') as out:
-            out.write(digest_hex)
-    except Exception as e:
-        raise Exception(f"Error writing hash to file '{output_hash_path}': {e}")
-
-    logging.info(f"SHA-256 hash of combined keys written to: {output_hash_path}")
-
-
-# TODO: need to use or not? compression?
-def decode_datagram(data: bytes):
-    """
-    Iterate through the concatenated frames inside one datagram
-    and yield (domain, count) tuples.
-    """
-    offset = 0                                         # Cursor into 'data'
-    while offset < len(data):
-        # --- Header validation ------------------------------------------------
-        if data[offset:offset+2] != b'DN':             # Check magic bytes
-            raise ValueError("Bad magic at offset", offset)
-        version = data[offset+2]                       # Read version (1 byte)
-        if version != 1:                               # Simple version gate
-            raise ValueError("Unsupported version", version)
-
-        # --- Extract domain length -------------------------------------------
-        dom_len = int.from_bytes(data[offset+3:offset+5], 'little')  # 2 bytes
-        start   = offset + 5                                         # Domain start
-        end     = start  + dom_len                                   # Domain end
-
-        # --- Extract domain string -------------------------------------------
-        domain  = data[start:end].decode('utf-8')     # Decode UTF-8 domain
-
-        # --- Extract count ----------------------------------------------------
-        count   = int.from_bytes(data[end:end+4], 'little')  # 4-byte count
-
-        # --- Yield or process -------------------------------------------------
-        yield domain, count                          # Caller can aggregate/store
-
-        # --- Advance cursor to next frame -------------------------------------
-        offset  = end + 4                            # Move past this frame
-
-
-# TODO: implement https server to download pdns data from sensor
-def download_pdns_data(port, database_path):
-    # listen for sensor communications (use scapy)
-    def packet_handler(packet):
-        # Ensure it's a UDP packet with a Raw payload
-        if UDP in packet and Raw in packet and packet[UDP].dport == port:
-            data = packet[Raw].load
-            # placeholder code - write data into text file lol
-            print(f"stored: {decode_datagram(data)} into {database_path}")
-            with open(database_path, 'w', encoding='utf-8') as file:
-                file.write(data)
-            # TODO: implement sqlite to store pdns data on privacy shield
-
-    # Use a filter to reduce packet load
-    sniff(filter=f"udp port {port}", prn=packet_handler, store=False)
-
-
-# TODO: test sending data to collector and determine that data format
-def udp_send_data(remote_ip, data, port=55555):
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            binary_data = str(data).encode('utf-8')
-
-            # Send the data to the remote endpoint
-            sock.sendto(binary_data, (remote_ip, port))
-            print(f"Successfully sent {len(binary_data)} bytes to {remote_ip}:{port}")
-
-    except socket.error as e:
-        print(f"Socket error: {e}")
-    except Exception as e:
-        print(f"An error occurred: {e}")
-
-
-# TODO: change to custom spoofed UDP to send pdns data to collector 
-def upload_pdns_data(database_path, signature_file, key_file, pwd_file, upload_url):
-    with open(database_path, 'r', encoding='utf-8') as file:
-        data = file.read()
-        print(f"Data being sent: {data}")
+# TODO: implement pdns data send to collector
+def upload_pdns_data(database, signature_file, key_file, pwd_file, upload_url):
+    # connect to database, pull data as str (DNS Queries table without sensor ID),
+    # convert to binary, store binary into file, send to sign, zip, encrypt and send out
+    print(f"connected to {database}")
+    pdns_data = "pdns.bin"
 
     zip_out_path = os.path.join(tempfile.gettempdir(), "zip_data.zip")
-    sign_and_package_file(database_path, signature_file, zip_out_path)
+    client.sign_and_package_file(pdns_data, signature_file, zip_out_path)
 
     enc_out_path = os.path.join(tempfile.gettempdir(), "pdns_payload")
-    encrypt_file(zip_out_path, key_file, enc_out_path)
+    client.encrypt_file(zip_out_path, key_file, enc_out_path)
 
-    # https to server via TOR || send spoofed UDP packets (use scapy) to server
-    proxies = {
-        'http': 'socks5h://127.0.0.1:9050',
-        'https': 'socks5h://127.0.0.1:9050'
-    }
-
-    files = {
-        'pdns_data': open(enc_out_path, 'rb')
-    }
-
-    with open(pwd_file, 'r', encoding='utf-8') as file:
-        passwd = file.read()
-    pwd = {
-        password : passwd
-    }
-
-    try:
-        response = requests.post(upload_url, pwd, files, proxies, timeout=30)
-        print(f"[+] Status Code: {response.status_code}")
-        print(f"[+] Response: {response.text[:500]}")
-    except requests.RequestException as e:
-        print(f"[-] Request failed: {e}")
-    finally:
-        files['file'].close()
+    # need to send password with file in the same request
+    print(f"sent {enc_out_path} with password {pwd_file} to {upload_url}")
 
 
 if __name__ == "__main__":
-    download_sig_and_key(config.DOWNLOAD_URL, config.SHARED_SECRET, config.OUT_DIR, config.VERIFY_SSL)
+    client.init_database(config.PRIVACYSHIELD_DATABASE)
+    app.run(host='0.0.0.0', port=5000, debug=True)
 
-    aes_path = os.path.join(config.OUT_DIR, append_date_to_filename("aes.key"))
-    ed_priv = os.path.join(config.OUT_DIR, append_date_to_filename("ed25519_private.pem"))
-    pwd_path = os.path.join(config.OUT_DIR, append_date_to_filename("pwd.txt"))
-    generate_password(aes_path, ed_priv, pwd_path)
+    # client.download_sig_and_key(config.DOWNLOAD_URL, config.SHARED_SECRET, config.OUT_DIR, config.VERIFY_SSL)
+    # aes_path = os.path.join(config.OUT_DIR, client.append_date_to_filename("aes.key"))
+    # ed_priv = os.path.join(config.OUT_DIR, client.append_date_to_filename("ed25519_private.pem"))
+    # pwd_path = os.path.join(config.OUT_DIR, client.append_date_to_filename("pwd.txt"))
+    # client.generate_password(aes_path, ed_priv, pwd_path)
+    # upload_pdns_data("./dns_data", ed_priv, aes_path, pwd_path, "http://localhost:5000/captured_udp_packets")
 
-    download_pdns_data("5000", "./pdns_data")
-
-    upload_pdns_data("./dns_data", ed_priv, aes_path, pwd_path, "http://localhost:5000/captured_udp_packets")
-
-    while True:
-        send_heartbeat(config.SENSOR_ID, config.SHARED_SECRET, config.HEARTBEAT_URL)
-        time.sleep(5)  # replace with 300 for real 5-minute interval
+    # while True:
+    #     client.send_heartbeat(config.SENSOR_ID, config.SHARED_SECRET, config.HEARTBEAT_URL)
+    #     time.sleep(5)  # replace with 300 for real 5-minute interval
