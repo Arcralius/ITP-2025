@@ -166,7 +166,7 @@ def heartbeat():
     if not all([sensor_id, timestamp, signature]):
         return jsonify({"error": "Missing fields"}), 400
     
-    if db.guid_exists(sensor_id, config.DATABASE):
+    if db.guid_exists(sensor_id, config.USER_DATABASE):
         with open(config.PASS_PATH, 'r', encoding='utf-8') as f:
             password = f.readline().strip()
     
@@ -328,13 +328,9 @@ def dashboard():
     return render_template('dashboard.html')
 
 
-# The / and /collect endpoints are for general logs and are not being changed
-# as they are separate from the sensor-specific logging.
 @app.route('/', methods=['GET'])
 def index():
     """Renders the index.html for general logs."""
-    # This remains unchanged as it handles a separate logging mechanism
-    # and is not tied to the new file-backed sensor logs.
     collected_entries = [] # Placeholder if not globally managed anymore
     grouped = defaultdict(list)
     for entry in collected_entries: # This part might need adjustment if `collected_entries` is no longer populated
@@ -401,7 +397,7 @@ def authenticate_admin(username, password):
         return False
     conn = None
     try:
-        conn = db.get_db_connection(config.DATABASE)
+        conn = db.get_db_connection(config.USER_DATABASE)
         cursor = conn.cursor()
         cursor.execute("SELECT username, password FROM users WHERE username = ?", (username,))
         user = cursor.fetchone()
@@ -476,7 +472,7 @@ def get_users():
     Includes the 'id' for CRUD operations.
     Now requires admin authentication.
     """
-    conn = db.get_db_connection(config.DATABASE)
+    conn = db.get_db_connection(config.USER_DATABASE)
     cursor = conn.cursor()
     cursor.execute('SELECT id, username, password, guid FROM users')
     users = cursor.fetchall()
@@ -509,7 +505,7 @@ def add_user():
         return jsonify({"success": False, "message": "Username and password are required."}), 400
 
     password = db.generate_password_hash(password)
-    conn = db.get_db_connection(config.DATABASE)
+    conn = db.get_db_connection(config.USER_DATABASE)
     try:
         cursor = conn.cursor()
         cursor.execute("INSERT INTO users (username, password, guid) VALUES (?, ?, ?)", (username, password, guid))
@@ -543,7 +539,7 @@ def update_user(user_id):
         return jsonify({"success": False, "message": "Username and password are required."}), 400
 
     password = db.generate_password_hash(password)
-    conn = db.get_db_connection(config.DATABASE)
+    conn = db.get_db_connection(config.USER_DATABASE)
     try:
         cursor = conn.cursor()
         cursor.execute("UPDATE users SET username = ?, password = ? WHERE id = ?", (username, password, user_id))
@@ -568,7 +564,7 @@ def delete_user(user_id):
     Deletes a user from the database.
     Now requires admin authentication.
     """
-    conn = db.get_db_connection(config.DATABASE)
+    conn = db.get_db_connection(config.USER_DATABASE)
     try:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -589,7 +585,7 @@ if __name__ == '__main__':
     udp_dns_thread.start()
     
     # init database
-    db.init_db(config.DATABASE)
+    db.init_db(config.USER_DATABASE)
 
     app.secret_key = os.urandom(24)  
     app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)

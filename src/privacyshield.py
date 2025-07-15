@@ -1,4 +1,4 @@
-import uuid
+import socket
 import time
 import hmac
 import hashlib
@@ -18,26 +18,16 @@ import logging
 
 from scapy.all import sniff, UDP, Raw
 import tempfile
-
-
-# Generate fixed UUID for this sensor instance
-SENSOR_ID = str(uuid.UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479"))
-SHARED_SECRET = "supersecretkey123"
-HEARTBEAT_URL = "http://localhost:5000/heartbeat"
-
-DOWNLOAD_URL = "http://localhost:5000/downloads"
-OUT_DIR   = "./client_download"
-ZIP_NAME  = "keys.zip"
-VERIFY_SSL= False
+import config
 
 
 def send_heartbeat(sensor_id, secret, heartbeat_url):
-    timestamp = datetime.utcnow().isoformat()
+    timestamp = datetime.isoformat()
     message = f"{sensor_id}|{timestamp}"
     signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
     payload = {
-        "sensor_id": SENSOR_ID,
+        "sensor_id": config.SENSOR_ID,
         "timestamp": timestamp,
         "signature": signature
     }
@@ -68,7 +58,7 @@ def download_sig_and_key(download_url: str, password: str, output_dir: str, veri
         os.makedirs(output_dir, exist_ok=True)
 
         # Define the path for the downloaded ZIP file
-        zip_path = os.path.join(output_dir, ZIP_NAME)
+        zip_path = os.path.join(output_dir, config.ZIP_NAME)
 
         # Write the response content to the ZIP file
         with open(zip_path, 'wb') as f:
@@ -220,6 +210,7 @@ def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: st
     logging.info(f"SHA-256 hash of combined keys written to: {output_hash_path}")
 
 
+# TODO: need to use or not? compression?
 def decode_datagram(data: bytes):
     """
     Iterate through the concatenated frames inside one datagram
@@ -252,6 +243,7 @@ def decode_datagram(data: bytes):
         offset  = end + 4                            # Move past this frame
 
 
+# TODO: implement https server to download pdns data from sensor
 def download_pdns_data(port, database_path):
     # listen for sensor communications (use scapy)
     def packet_handler(packet):
@@ -262,15 +254,29 @@ def download_pdns_data(port, database_path):
             print(f"stored: {decode_datagram(data)} into {database_path}")
             with open(database_path, 'w', encoding='utf-8') as file:
                 file.write(data)
-            """ 
-            save to txt file? 
-            save to sqlite db?
-            """
+            # TODO: implement sqlite to store pdns data on privacy shield
 
     # Use a filter to reduce packet load
     sniff(filter=f"udp port {port}", prn=packet_handler, store=False)
 
 
+# TODO: test sending data to collector and determine that data format
+def udp_send_data(remote_ip, data, port=55555):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            binary_data = str(data).encode('utf-8')
+
+            # Send the data to the remote endpoint
+            sock.sendto(binary_data, (remote_ip, port))
+            print(f"Successfully sent {len(binary_data)} bytes to {remote_ip}:{port}")
+
+    except socket.error as e:
+        print(f"Socket error: {e}")
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+
+# TODO: change to custom spoofed UDP to send pdns data to collector 
 def upload_pdns_data(database_path, signature_file, key_file, pwd_file, upload_url):
     with open(database_path, 'r', encoding='utf-8') as file:
         data = file.read()
@@ -309,13 +315,11 @@ def upload_pdns_data(database_path, signature_file, key_file, pwd_file, upload_u
 
 
 if __name__ == "__main__":
-    sensor_id = SENSOR_ID       # input("Enter your sensor ID: ")
-    password = SHARED_SECRET    # input("Enter your password: ")
-    download_sig_and_key(DOWNLOAD_URL, password, OUT_DIR, VERIFY_SSL)
+    download_sig_and_key(config.DOWNLOAD_URL, config.SHARED_SECRET, config.OUT_DIR, config.VERIFY_SSL)
 
-    aes_path = os.path.join(OUT_DIR, append_date_to_filename("aes.key"))
-    ed_priv = os.path.join(OUT_DIR, append_date_to_filename("ed25519_private.pem"))
-    pwd_path = os.path.join(OUT_DIR, append_date_to_filename("pwd.txt"))
+    aes_path = os.path.join(config.OUT_DIR, append_date_to_filename("aes.key"))
+    ed_priv = os.path.join(config.OUT_DIR, append_date_to_filename("ed25519_private.pem"))
+    pwd_path = os.path.join(config.OUT_DIR, append_date_to_filename("pwd.txt"))
     generate_password(aes_path, ed_priv, pwd_path)
 
     download_pdns_data("5000", "./pdns_data")
@@ -323,5 +327,5 @@ if __name__ == "__main__":
     upload_pdns_data("./dns_data", ed_priv, aes_path, pwd_path, "http://localhost:5000/captured_udp_packets")
 
     while True:
-        send_heartbeat(sensor_id, password, HEARTBEAT_URL)
+        send_heartbeat(config.SENSOR_ID, config.SHARED_SECRET, config.HEARTBEAT_URL)
         time.sleep(5)  # replace with 300 for real 5-minute interval

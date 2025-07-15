@@ -1,4 +1,4 @@
-import os
+import os, uuid
 # --- Logging Configuration ---
 LOG_DIR = 'logs'
 HEARTBEAT_LOG_FILE = 'heartbeats.jsonl'
@@ -24,7 +24,9 @@ PASS_PATH = os.path.join(KEY_STORE_DIR, PASS_FILENAME)
 ZIP_PATH = os.path.join(KEY_STORE_DIR, ZIP_FILENAME)
 
 # --- Database Configuration ---
-DATABASE = "user.db"
+USER_DATABASE = "user.db"
+HB_DATABASE = "hb.db"
+PDNS_DATABASE = "pdns.db"
 
 # --- Network Configuration ---
 UDP_DNS_PORT = 5002
@@ -33,3 +35,12 @@ UDP_DNS_PORT = 5002
 SENSOR_DB = {
     "f47ac10b-58cc-4372-a567-0e02b2c3d479": "supersecretkey123"
 }
+
+# Generate fixed UUID for this sensor instance
+SENSOR_ID = str(uuid.UUID("bd3e0440-e71f-4689-aa0a-fcf296a6824a")) # SIT guid
+SHARED_SECRET = "supersecretkey123"
+HEARTBEAT_URL = "http://localhost:5000/heartbeat"
+DOWNLOAD_URL = "http://localhost:5000/downloads"
+OUT_DIR   = "./client_download"
+ZIP_NAME  = "keys.zip"
+VERIFY_SSL= False
