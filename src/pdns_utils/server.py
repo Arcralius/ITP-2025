@@ -1,7 +1,12 @@
 from datetime import datetime
-import hashlib, logging, os, re, zipfile, json, base64, os
+import hashlib, logging, os, re, zipfile, json, base64, os, sqlite3
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
+from Crypto.Signature import eddsa
+from Crypto.PublicKey import ECC
+from Crypto.Hash import SHA512
 
 
 def append_date_to_filename(path: str) -> str:
@@ -133,3 +138,122 @@ def decode_request_data(request_data):
     except Exception as e:
         raise ValueError(f"An unexpected error occurred during payload processing: {e}")
     
+# Initialize PDNS database function
+def init_pdns_database(db_name="pdns.db"):
+    """Initializes the PDNS SQLite database and creates tables if they don't exist."""
+    print(f"Initializing PDNS database: {db_name}")
+    try:
+        with sqlite3.connect(db_name) as conn:
+            cursor = conn.cursor()
+
+            # Table for received PDNS data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pdns_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    resolved_ip TEXT NOT NULL,
+                    status TEXT,
+                    received_at TEXT NOT NULL,
+                    processed_at TEXT NOT NULL
+                );
+            """)
+            print("- 'pdns_data' table created or already exists.")
+
+            # Table for tracking upload batches
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS upload_batches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id TEXT UNIQUE NOT NULL,
+                    record_count INTEGER NOT NULL,
+                    received_at TEXT NOT NULL,
+                    status TEXT DEFAULT 'processed'
+                );
+            """)
+            print("- 'upload_batches' table created or already exists.")
+
+            # Indexes for better performance
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pdns_domain ON pdns_data(domain);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pdns_timestamp ON pdns_data(timestamp);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pdns_resolved_ip ON pdns_data(resolved_ip);
+            """)
+            print("- Indexes created or already exist.")
+
+            conn.commit()
+        print("PDNS database initialization complete.")
+    except sqlite3.Error as e:
+        print(f"[PDNS Database Error] An error occurred during initialization: {e}")
+        logging.exception(f"PDNS database initialization error: {e}")
+        return False
+    return True
+
+# Utility function to decrypt file
+def decrypt_file(encrypted_file_path, key_file_path, output_path):
+    """Decrypts an AES-encrypted file."""
+    try:
+        # Read the AES key
+        with open(key_file_path, 'rb') as key_file:
+            aes_key = key_file.read()
+            if len(aes_key) != 32:
+                raise ValueError("AES key must be 256 bits (32 bytes).")
+        
+        # Read the encrypted file
+        with open(encrypted_file_path, 'rb') as enc_file:
+            encrypted_data = enc_file.read()
+        
+        # Extract IV and ciphertext
+        iv = encrypted_data[:AES.block_size]
+        ciphertext = encrypted_data[AES.block_size:]
+        
+        # Decrypt the data
+        cipher = AES.new(aes_key, AES.MODE_CBC, iv)
+        padded_plaintext = cipher.decrypt(ciphertext)
+        
+        # Remove padding
+        plaintext = unpad(padded_plaintext, AES.block_size)
+        
+        # Write decrypted data to output file
+        with open(output_path, 'wb') as out_file:
+            out_file.write(plaintext)
+        
+        print(f"File decrypted successfully: {output_path}")
+        return True
+        
+    except Exception as e:
+        print(f"Error decrypting file: {e}")
+        logging.exception(f"Decryption error: {e}")
+        return False
+
+# Utility function to verify signature
+def verify_signature(file_path, signature_file_path, public_key_path):
+    """Verifies the EdDSA signature of a file."""
+    try:
+        # Load the public key
+        with open(public_key_path, 'rb') as key_file:
+            public_key = ECC.import_key(key_file.read())
+        
+        # Read the file to verify
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+        
+        # Read the signature
+        with open(signature_file_path, 'rb') as sig_file:
+            signature = sig_file.read()
+        
+        # Verify the signature
+        verifier = eddsa.new(public_key)
+        h = SHA512.new(file_data)
+        verifier.verify(h, signature)
+        
+        print("Signature verification successful")
+        return True
+        
+    except Exception as e:
+        print(f"Signature verification failed: {e}")
+        logging.exception(f"Signature verification error: {e}")
+        return False

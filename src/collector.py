@@ -1,6 +1,6 @@
-import base64, hashlib, hmac, json, logging, os, socket, sqlite3, threading, uuid
+import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, zipfile, shutil
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from functools import wraps
 import config
 from flask import Flask, request, render_template, jsonify, send_file, flash, session, redirect, url_for
@@ -41,7 +41,7 @@ def daily_task():
     except Exception as e:
         logging.exception(f"Exception in daily_task: {e}")
 
-@app.route('/downloads', methods=['POST'])
+@app.route('/download', methods=['POST'])
 def serve_KeySig():
     data = request.json
     if not data or 'password' not in data:
@@ -99,7 +99,193 @@ def heartbeat():
     print(f"Heartbeat from {sensor_id} received and validated, logged to file.")
     return jsonify({"status": "alive"}), 200
 
-# TODO: udp sniffer + data processing -> upload to db
+class UDPDNSReceiver:
+    def __init__(self, host='0.0.0.0', port=9999, max_packet_size=65507):
+        self.host = host
+        self.port = port
+        self.max_packet_size = max_packet_size
+        self.sock = None
+        self.running = False
+        
+    def start_server(self):
+        """Start the UDP server."""
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind((self.host, self.port))
+        self.running = True
+        
+        logging.info(f"UDP DNS receiver started on {self.host}:{self.port}")
+        
+        while self.running:
+            try:
+                data, client_address = self.sock.recvfrom(self.max_packet_size)
+                print(f"Received data from {client_address}, size: {len(data)} bytes")
+                
+                # Process the received data in a separate thread
+                thread = threading.Thread(
+                    target=self.process_received_data,
+                    args=(data, client_address)
+                )
+                thread.daemon = True
+                thread.start()
+                
+            except socket.error as e:
+                if self.running:
+                    print(f"Socket error: {e}")
+                    logging.exception(f"Socket error in UDP server: {e}")
+                    
+    def stop_server(self):
+        """Stop the UDP server."""
+        self.running = False
+        if self.sock:
+            self.sock.close()
+            
+    def process_received_data(self, encrypted_data, client_address):
+        """Process received DNS data and send acknowledgment."""
+        try:
+            # Create temporary directory for processing
+            temp_dir = tempfile.mkdtemp()
+            
+            try:
+                # Save encrypted data to temporary file
+                encrypted_file_path = os.path.join(temp_dir, "encrypted_data")
+                with open(encrypted_file_path, 'wb') as f:
+                    f.write(encrypted_data)
+                
+                # Decrypt the data
+                decrypted_file_path = os.path.join(temp_dir, "decrypted_data")
+                if not server.decrypt_file(encrypted_file_path, config.AES_KEY_PATH, decrypted_file_path):
+                    print(f"Decryption failed for data from {client_address}")
+                    return
+                
+                # Read decrypted data
+                with open(decrypted_file_path, 'rb') as f:
+                    decrypted_data = f.read()
+                
+                # Parse the payload: JSON header + zip data
+                try:
+                    # Find the separator between JSON header and zip data
+                    separator_pos = decrypted_data.find(b'\n')
+                    if separator_pos == -1:
+                        raise ValueError("Invalid payload format")
+                    
+                    json_header = decrypted_data[:separator_pos]
+                    zip_data = decrypted_data[separator_pos + 1:]
+                    
+                    # Parse JSON header
+                    header_info = json.loads(json_header.decode('utf-8'))
+                    record_count = header_info.get('record_count', 0)
+                    
+                except (json.JSONDecodeError, ValueError) as e:
+                    print(f"Failed to parse payload from {client_address}: {e}")
+                    return
+                
+                # Save zip data to file
+                zip_file_path = os.path.join(temp_dir, "received_data.zip")
+                with open(zip_file_path, 'wb') as f:
+                    f.write(zip_data)
+                
+                # Extract the ZIP file
+                extract_dir = os.path.join(temp_dir, "extracted")
+                os.makedirs(extract_dir, exist_ok=True)
+                
+                with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+                    zip_ref.extractall(extract_dir)
+                
+                # Find the data file and signature file
+                extracted_files = os.listdir(extract_dir)
+                data_file = None
+                signature_file = None
+                
+                for filename in extracted_files:
+                    if filename.endswith('.bin'):
+                        data_file = os.path.join(extract_dir, filename)
+                    elif filename.endswith('.sig'):
+                        signature_file = os.path.join(extract_dir, filename)
+                
+                if not data_file:
+                    print(f"Data file not found in ZIP from {client_address}")
+                    return
+                
+                # Verify signature if available
+                if signature_file and os.path.exists(config.ED_PUB_PATH):
+                    if not server.verify_signature(data_file, signature_file, config.ED_PUB_PATH):
+                        print(f"Signature verification failed for data from {client_address}")
+                        return
+                    else:
+                        print(f"Signature verification successful for data from {client_address}")
+                else:
+                    print(f"Public key not found, skipping signature verification for {client_address}")
+                    return
+                
+                # Read and parse the DNS data
+                with open(data_file, 'rb') as f:
+                    dns_data_bytes = f.read()
+                
+                # Convert from binary to JSON
+                dns_data_str = dns_data_bytes.decode('utf-8')
+                dns_records = json.loads(dns_data_str)
+                
+                if not isinstance(dns_records, list):
+                    print(f"Invalid data format from {client_address}")
+                    return
+                
+                # Check length
+                if len(dns_records) == record_count:
+                    logging.info("Reported record length matches record length recieved")
+                else:
+                    logging.error("Reported record length does not match record length recieved")
+
+                # Generate unique batch ID
+                batch_id = f"batch_{int(time.time())}_{os.urandom(4).hex()}"
+                
+                # Store data in PDNS database
+                processed_at = datetime.now(UTC).isoformat()
+                
+                with sqlite3.connect(config.PDNS_DATABASE) as conn:
+                    cursor = conn.cursor()
+                    
+                    # Insert batch record
+                    cursor.execute("""
+                        INSERT INTO upload_batches (batch_id, record_count, received_at, status)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (batch_id, len(dns_records), processed_at, 'processed'))
+                    
+                    # Insert DNS records
+                    for record in dns_records:
+                        cursor.execute("""
+                            INSERT INTO pdns_data (timestamp, domain, resolved_ip, status, received_at, processed_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            record.get('timestamp'),
+                            record.get('domain'),
+                            record.get('resolved_ip'),
+                            record.get('status'),
+                            record.get('received_at'),
+                            processed_at
+                        ))
+                    
+                    conn.commit()
+                
+                print(f"Successfully processed {len(dns_records)} DNS records from {client_address} in batch {batch_id}")
+                logging.info(f"[UDP PDNS Receiver] Successfully processed {len(dns_records)} DNS records from {client_address} in batch {batch_id}")
+                
+            finally:
+                # Clean up temporary files
+                try:
+                    shutil.rmtree(temp_dir)
+                    print(f"Cleaned up temporary directory: {temp_dir}")
+                except Exception as cleanup_error:
+                    print(f"Error cleaning up temporary directory: {cleanup_error}")
+        
+        except json.JSONDecodeError as e:
+            print(f"JSON decode error from {client_address}: {e}")
+        except sqlite3.Error as e:
+            print(f"Database error processing data from {client_address}: {e}")
+            logging.exception(f"Database error in process_received_data: {e}")
+        except Exception as e:
+            print(f"Unexpected error processing data from {client_address}: {e}")
+            logging.exception(f"Unexpected error in process_received_data: {e}")
 
 # TODO: add api documentation and data security and validation
 # https://swagger.io/docs/ use this to document apis used
@@ -300,3 +486,12 @@ if __name__ == '__main__':
 
     app.secret_key = os.urandom(24)  
     app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
+
+    # Create and start the UDP server
+    udp_receiver = UDPDNSReceiver(host='0.0.0.0', port=9999)
+    
+    try:
+        udp_receiver.start_server()
+    except KeyboardInterrupt:
+        print("Shutting down UDP server...")
+        udp_receiver.stop_server()

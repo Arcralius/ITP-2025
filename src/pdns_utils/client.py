@@ -1,4 +1,5 @@
-import hashlib, logging, datetime, hmac, os, json, base64
+import hashlib, logging, hmac, os, json, base64, tempfile, socket
+from datetime import datetime
 from zipfile import ZipFile, BadZipFile
 import requests, config, sqlite3
 from Crypto.Signature import eddsa
@@ -70,14 +71,14 @@ def download_sig_and_key(download_url: str, password: str, output_dir: str, veri
     except Exception as err:
         print(f"An unexpected error occurred: {err}")
 
-def sign_and_package_file(file_to_sign: str, signature_file: str, output_path: str):
+def sign_and_package_file(file_to_sign: str, private_key_file: str, output_path: str):
     try:
         # Load the private key for signing
         try:
-            with open('private_key.pem', 'rb') as key_file:
+            with open(private_key_file, 'rb') as key_file:
                 private_key = ECC.import_key(key_file.read())
         except FileNotFoundError:
-            raise FileNotFoundError("Private key file 'private_key.pem' not found.")
+            raise FileNotFoundError(f"Private key file {private_key_file} not found.")
         except Exception as e:
             raise Exception(f"Error loading private key: {e}")
 
@@ -99,6 +100,7 @@ def sign_and_package_file(file_to_sign: str, signature_file: str, output_path: s
             raise Exception(f"Error signing the file: {e}")
 
         # Save the signature to the specified file
+        signature_file = append_date_to_filename(os.path.join(tempfile.gettempdir(), "signature.sig"))
         try:
             with open(signature_file, 'wb') as sig_file:
                 sig_file.write(signature)
@@ -114,6 +116,10 @@ def sign_and_package_file(file_to_sign: str, signature_file: str, output_path: s
             raise Exception(f"Error creating ZIP archive '{output_path}': {e}")
 
         print(f"File signed and packaged successfully. Output saved to: {output_path}")
+
+        # clean up
+        os.remove(signature_file)
+        print(f"Successfully cleaned up and removed: {signature_file}")
 
     except Exception as e:
         print(f"An error occurred: {e}")
@@ -226,7 +232,7 @@ def init_database(db_name):
             """)
             print("- 'heartbeats' table created or already exists.")
 
-            # Table for captured DNS queries
+            # Table for captured DNS queries with 'uploaded' column
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS dns_queries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -235,10 +241,18 @@ def init_database(db_name):
                     domain TEXT NOT NULL,
                     resolved_ip TEXT NOT NULL,
                     status TEXT,
-                    received_at TEXT NOT NULL
+                    received_at TEXT NOT NULL,
+                    uploaded BOOLEAN DEFAULT FALSE
                 );
             """)
             print("- 'dns_queries' table created or already exists.")
+
+            # Add 'uploaded' column to existing table if it doesn't exist
+            cursor.execute("PRAGMA table_info(dns_queries)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'uploaded' not in columns:
+                cursor.execute("ALTER TABLE dns_queries ADD COLUMN uploaded BOOLEAN DEFAULT FALSE")
+                print("- Added 'uploaded' column to existing dns_queries table.")
 
             # Table for general captured UDP packets
             cursor.execute("""
@@ -305,3 +319,20 @@ def validate_request(data, secret):
         print(f"[Validation Error] An unexpected error occurred: {e}")
         return None
 
+
+def send_udp_data(data, host, port):
+    """Send data via UDP."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    
+    try:
+        print(f"Sending UDP data to {host}:{port}")
+        sock.sendto(data, (host, port))
+        print(f"Successfully sent {len(data)} bytes to {host}:{port}")
+        return True
+        
+    except Exception as e:
+        print(f"Failed to send UDP data: {e}")
+        return False
+        
+    finally:
+        sock.close()
