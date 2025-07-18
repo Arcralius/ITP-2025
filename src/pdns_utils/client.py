@@ -319,20 +319,19 @@ def validate_request(data, secret):
         print(f"[Validation Error] An unexpected error occurred: {e}")
         return None
 
-
 def send_udp_data(data, host, port):
     """Send data via UDP."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    
+   
     try:
-        print(f"Sending UDP data to {host}:{port}")
+        logging.info(f"Sending UDP data to {host}:{port}")
         sock.sendto(data, (host, port))
-        print(f"Successfully sent {len(data)} bytes to {host}:{port}")
+        logging.info(f"Successfully sent {len(data)} bytes to {host}:{port}")
         return True
-        
+       
     except Exception as e:
-        print(f"Failed to send UDP data: {e}")
+        logging.error(f"Failed to send UDP data: {e}")
         return False
-        
+       
     finally:
         sock.close()

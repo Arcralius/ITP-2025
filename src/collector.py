@@ -119,7 +119,7 @@ class UDPDNSReceiver:
         while self.running:
             try:
                 data, client_address = self.sock.recvfrom(self.max_packet_size)
-                print(f"Received data from {client_address}, size: {len(data)} bytes")
+                logging.info(f"Received data from {client_address}, size: {len(data)} bytes")
                 
                 # Process the received data in a separate thread
                 thread = threading.Thread(
@@ -131,7 +131,7 @@ class UDPDNSReceiver:
                 
             except socket.error as e:
                 if self.running:
-                    print(f"Socket error: {e}")
+                    logging.error(f"Socket error: {e}")
                     logging.exception(f"Socket error in UDP server: {e}")
                     
     def stop_server(self):
@@ -155,7 +155,7 @@ class UDPDNSReceiver:
                 # Decrypt the data
                 decrypted_file_path = os.path.join(temp_dir, "decrypted_data")
                 if not server.decrypt_file(encrypted_file_path, config.AES_KEY_PATH, decrypted_file_path):
-                    print(f"Decryption failed for data from {client_address}")
+                    logging.error(f"Decryption failed for data from {client_address}")
                     return
                 
                 # Read decrypted data
@@ -176,10 +176,36 @@ class UDPDNSReceiver:
                     header_info = json.loads(json_header.decode('utf-8'))
                     record_count = header_info.get('record_count', 0)
                     
+                    logging.info(f"Received payload from {client_address} with record_count: {record_count}")
+                    
                 except (json.JSONDecodeError, ValueError) as e:
-                    print(f"Failed to parse payload from {client_address}: {e}")
+                    logging.error(f"Failed to parse payload from {client_address}: {e}")
                     return
                 
+                # Handle empty data packet (record_count = 0)
+                if record_count == 0:
+                    logging.info(f"Received empty data packet from {client_address}")
+                    
+                    # Generate unique batch ID for empty packet
+                    batch_id = f"batch_{int(time.time())}_{os.urandom(4).hex()}"
+                    processed_at = datetime.now(UTC).isoformat()
+                    
+                    # Store empty batch record in database
+                    with sqlite3.connect(config.PDNS_DATABASE) as conn:
+                        cursor = conn.cursor()
+                        
+                        # Insert batch record for empty packet
+                        cursor.execute("""
+                            INSERT INTO upload_batches (batch_id, record_count, received_at, status)
+                            VALUES (?, ?, ?, ?)
+                        """, (batch_id, 0, processed_at, 'processed'))
+                        
+                        conn.commit()
+                    
+                    logging.info(f"Successfully processed empty data packet from {client_address} in batch {batch_id}")
+                    return
+                
+                # Process non-empty data packets
                 # Save zip data to file
                 zip_file_path = os.path.join(temp_dir, "received_data.zip")
                 with open(zip_file_path, 'wb') as f:
@@ -204,18 +230,18 @@ class UDPDNSReceiver:
                         signature_file = os.path.join(extract_dir, filename)
                 
                 if not data_file:
-                    print(f"Data file not found in ZIP from {client_address}")
+                    logging.error(f"Data file not found in ZIP from {client_address}")
                     return
                 
                 # Verify signature if available
                 if signature_file and os.path.exists(config.ED_PUB_PATH):
                     if not server.verify_signature(data_file, signature_file, config.ED_PUB_PATH):
-                        print(f"Signature verification failed for data from {client_address}")
+                        logging.error(f"Signature verification failed for data from {client_address}")
                         return
                     else:
-                        print(f"Signature verification successful for data from {client_address}")
+                        logging.info(f"Signature verification successful for data from {client_address}")
                 else:
-                    print(f"Public key not found, skipping signature verification for {client_address}")
+                    logging.warning(f"Public key not found, skipping signature verification for {client_address}")
                     return
                 
                 # Read and parse the DNS data
@@ -227,14 +253,14 @@ class UDPDNSReceiver:
                 dns_records = json.loads(dns_data_str)
                 
                 if not isinstance(dns_records, list):
-                    print(f"Invalid data format from {client_address}")
+                    logging.error(f"Invalid data format from {client_address}")
                     return
                 
                 # Check length
                 if len(dns_records) == record_count:
-                    logging.info("Reported record length matches record length recieved")
+                    logging.info("Reported record length matches record length received")
                 else:
-                    logging.error("Reported record length does not match record length recieved")
+                    logging.error("Reported record length does not match record length received")
 
                 # Generate unique batch ID
                 batch_id = f"batch_{int(time.time())}_{os.urandom(4).hex()}"
@@ -248,14 +274,14 @@ class UDPDNSReceiver:
                     # Insert batch record
                     cursor.execute("""
                         INSERT INTO upload_batches (batch_id, record_count, received_at, status)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?)
                     """, (batch_id, len(dns_records), processed_at, 'processed'))
                     
                     # Insert DNS records
                     for record in dns_records:
                         cursor.execute("""
                             INSERT INTO pdns_data (timestamp, domain, resolved_ip, status, received_at, processed_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                            VALUES (?, ?, ?, ?, ?, ?)
                         """, (
                             record.get('timestamp'),
                             record.get('domain'),
@@ -267,24 +293,23 @@ class UDPDNSReceiver:
                     
                     conn.commit()
                 
-                print(f"Successfully processed {len(dns_records)} DNS records from {client_address} in batch {batch_id}")
-                logging.info(f"[UDP PDNS Receiver] Successfully processed {len(dns_records)} DNS records from {client_address} in batch {batch_id}")
+                logging.info(f"Successfully processed {len(dns_records)} DNS records from {client_address} in batch {batch_id}")
                 
             finally:
                 # Clean up temporary files
                 try:
                     shutil.rmtree(temp_dir)
-                    print(f"Cleaned up temporary directory: {temp_dir}")
+                    logging.debug(f"Cleaned up temporary directory: {temp_dir}")
                 except Exception as cleanup_error:
-                    print(f"Error cleaning up temporary directory: {cleanup_error}")
+                    logging.error(f"Error cleaning up temporary directory: {cleanup_error}")
         
         except json.JSONDecodeError as e:
-            print(f"JSON decode error from {client_address}: {e}")
+            logging.error(f"JSON decode error from {client_address}: {e}")
         except sqlite3.Error as e:
-            print(f"Database error processing data from {client_address}: {e}")
+            logging.error(f"Database error processing data from {client_address}: {e}")
             logging.exception(f"Database error in process_received_data: {e}")
         except Exception as e:
-            print(f"Unexpected error processing data from {client_address}: {e}")
+            logging.error(f"Unexpected error processing data from {client_address}: {e}")
             logging.exception(f"Unexpected error in process_received_data: {e}")
 
 # TODO: add api documentation and data security and validation

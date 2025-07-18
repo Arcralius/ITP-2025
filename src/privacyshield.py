@@ -195,11 +195,11 @@ def download():
     except Exception as e:
         logging.exception(f"Exception in download_from_collector: {e}")
 
-@scheduler.task('interval', id='daily_task', seconds=30 , next_run_time=datetime.now())
+@scheduler.task('interval', id='daily_task', seconds=10 , next_run_time=datetime.now())
 def upload_pdns_data():
     try:
         # Connect to database and retrieve unuploaded DNS queries
-        print(f"Connecting to database: {path_to.database}")
+        logging.info(f"Connecting to database: {path_to.database}")
         
         with sqlite3.connect(path_to.database) as conn:
             cursor = conn.cursor()
@@ -214,24 +214,30 @@ def upload_pdns_data():
             unuploaded_records = cursor.fetchall()
             
             if not unuploaded_records:
-                logging.error("No unuploaded DNS records found.")
-                return
-            
-            logging.info(f"Found {len(unuploaded_records)} unuploaded DNS records.")
-            
-            # Extract the IDs for later update
-            record_ids = [record[0] for record in unuploaded_records]
-            
-            # Prepare data for upload (excluding the ID column)
-            upload_data = []
-            for record in unuploaded_records:
-                upload_data.append({
-                    'timestamp': record[1],
-                    'domain': record[2],
-                    'resolved_ip': record[3],
-                    'status': record[4],
-                    'received_at': record[5]
-                })
+                logging.info("No unuploaded DNS records found. Sending empty packet.")
+                
+                # Create empty data packet
+                upload_data = []
+                record_count = 0
+                record_ids = []
+                
+            else:
+                logging.info(f"Found {len(unuploaded_records)} unuploaded DNS records.")
+                
+                # Extract the IDs for later update
+                record_ids = [record[0] for record in unuploaded_records]
+                record_count = len(unuploaded_records)
+                
+                # Prepare data for upload (excluding the ID column)
+                upload_data = []
+                for record in unuploaded_records:
+                    upload_data.append({
+                        'timestamp': record[1],
+                        'domain': record[2],
+                        'resolved_ip': record[3],
+                        'status': record[4],
+                        'received_at': record[5]
+                    })
             
             # Convert data to JSON string and then to binary
             json_data = json.dumps(upload_data, indent=2)
@@ -252,8 +258,6 @@ def upload_pdns_data():
                 zip_data = f.read()
             
             # Prepare payload: record_count + zip_data
-            record_count = len(unuploaded_records)
-            
             # Serialize the payload
             serialized_payload = json.dumps({'record_count': record_count}).encode('utf-8') + b'\n' + zip_data
             
@@ -271,21 +275,24 @@ def upload_pdns_data():
                 encrypted_data = f.read()
             
             # Send via UDP
-            success = send_udp_data(encrypted_data, path_to.udp_host, path_to.udp_port)
+            success = client.send_udp_data(encrypted_data, path_to.udp_host, path_to.udp_port)
             
             if success:
-                logging.info(f"Successfully uploaded {len(unuploaded_records)} DNS records via UDP.")
-                
-                # Mark records as uploaded
-                placeholders = ','.join(['?' for _ in record_ids])
-                cursor.execute(f"""
-                    UPDATE dns_queries 
-                    SET uploaded = TRUE 
-                    WHERE id IN ({placeholders})
-                """, record_ids)
-                
-                conn.commit()
-                print(f"Marked {len(record_ids)} records as uploaded.")
+                if record_count > 0:
+                    logging.info(f"Successfully uploaded {record_count} DNS records via UDP.")
+                    
+                    # Mark records as uploaded
+                    placeholders = ','.join(['?' for _ in record_ids])
+                    cursor.execute(f"""
+                        UPDATE dns_queries 
+                        SET uploaded = TRUE 
+                        WHERE id IN ({placeholders})
+                    """, record_ids)
+                    
+                    conn.commit()
+                    logging.info(f"Marked {len(record_ids)} records as uploaded.")
+                else:
+                    logging.info("Successfully sent empty data packet via UDP.")
                 
             else:
                 logging.error("Failed to upload DNS data via UDP.")
@@ -295,15 +302,15 @@ def upload_pdns_data():
                 try:
                     if os.path.exists(temp_file):
                         os.remove(temp_file)
-                        print(f"Cleaned up temporary file: {temp_file}")
+                        logging.debug(f"Cleaned up temporary file: {temp_file}")
                 except Exception as cleanup_error:
-                    print(f"Error cleaning up {temp_file}: {cleanup_error}")
+                    logging.error(f"Error cleaning up {temp_file}: {cleanup_error}")
             
     except sqlite3.Error as e:
-        print(f"[Database Error] Could not process DNS data upload: {e}")
+        logging.error(f"[Database Error] Could not process DNS data upload: {e}")
         logging.exception(f"Database error in upload_pdns_data: {e}")
     except Exception as e:
-        print(f"[Upload Error] Exception in upload_pdns_data: {e}")
+        logging.error(f"[Upload Error] Exception in upload_pdns_data: {e}")
         logging.exception(f"Exception in upload_pdns_data: {e}")
 
 if __name__ == "__main__":
