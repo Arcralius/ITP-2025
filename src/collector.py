@@ -1,4 +1,4 @@
-import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, zipfile, shutil
+import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, zipfile, shutil, threading
 from collections import defaultdict
 from datetime import datetime, timezone, UTC
 from functools import wraps
@@ -48,14 +48,12 @@ def serve_KeySig():
         return jsonify({'error': 'Password is required'}), 400
 
     client_password = data['password']
-    server_pwd_path = server.append_date_to_filename(config.PASS_PATH)
-    with open(server_pwd_path, 'r', encoding='utf-8') as f:
-            server_password = f.read().strip()  
-    if not server.verify_password(client_password, server_password):
+    server_pwd_path = server.append_today_date_if_missing(config.PASS_PATH)
+    if not server.verify_password(client_password, server_pwd_path):
         return jsonify({'error': 'Invalid password'}), 403
 
     try:
-        keys_zip = server.append_date_to_filename(config.ZIP_OUT_PATH)
+        keys_zip = server.append_today_date_if_missing(config.ZIP_PATH)
         return send_file(keys_zip, as_attachment=True)
     except Exception as e:
         import traceback
@@ -504,19 +502,24 @@ def delete_user(user_id):
     finally:
         conn.close()
 
-
-if __name__ == '__main__':    
-    # init database
-    db.init_db(config.USER_DATABASE)
-
-    app.secret_key = os.urandom(24)  
-    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
-
+def upd_listener_loop():
     # Create and start the UDP server
     udp_receiver = UDPDNSReceiver(host='0.0.0.0', port=9999)
-    
     try:
         udp_receiver.start_server()
     except KeyboardInterrupt:
         print("Shutting down UDP server...")
         udp_receiver.stop_server()
+
+
+if __name__ == '__main__':    
+    # init database
+    db.init_user_db(config.USER_DATABASE)
+    db.init_pdns_db(config.PDNS_DATABASE)
+
+    app.secret_key = os.urandom(24)  
+    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
+    
+    heartbeat_thread = threading.Thread(target=upd_listener_loop, daemon=True)
+    heartbeat_thread.start()
+    

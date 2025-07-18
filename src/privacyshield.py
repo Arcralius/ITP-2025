@@ -1,23 +1,27 @@
 # Standard library imports
-import hmac, os, sqlite3, tempfile, time, logging, json
+import hmac, os, sqlite3, tempfile, time, logging, json, threading
 from datetime import UTC, datetime
 from flask import Flask, jsonify, render_template, request
 from flask_apscheduler import APScheduler
 from pdns_utils import client
+from pathlib import Path
 
 
 # --- Server Configuration ---
 app = Flask(__name__)
 class PATH_TO:
-    outp_dir = "./client_download"
-    sig_file = os.path.join(outp_dir, client.append_date_to_filename("aes.key"))
-    key_file = os.path.join(outp_dir, client.append_date_to_filename("ed25519_private.pem"))
-    pwd_file = os.path.join(outp_dir, client.append_date_to_filename("pwd.txt"))
-    zip_file = os.path.join(outp_dir, client.append_date_to_filename("archive.zip"))
+    outp_dir = ".//client_download//"
+    sig_file = client.append_today_date_if_missing(".//client_download//aes.key")
+    key_file = client.append_today_date_if_missing(".//client_download//ed25519_private.pem")
+    pwd_file = client.append_today_date_if_missing(".//client_download//pwd.txt")
+    zip_file = client.append_today_date_if_missing(".//client_download//archive.zip")
     database = "sensors.db"
     down_url = "http://localhost:5000/download"
     htbt_url = "http://localhost:5000/heartbeat"
 
+HEARTBEAT_TIMER = 5
+DOWNLOAD_TIMER = 5
+UPLOAD_TIMER = 20
 VERIFY_SSL= False
 path_to = PATH_TO()
 scheduler = APScheduler()
@@ -177,146 +181,163 @@ def get_secret():
         logging.error(f"[Secret Route Error] Invalid signature from {sensor_id}.")
         return jsonify({"status": "error", "message": "Invalid signature"}), 403
 
-@scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
-def download():
-    try:
+def heartbeat_loop():
+    while True:
+        client.send_heartbeat(PRIVACY_SHIELD_GUID, SHARED_SECRET, path_to.htbt_url)
+        print("heartbeat sent to collector")
+        time.sleep(HEARTBEAT_TIMER)
+
+def download_loop():
+    while True:
+        time.sleep(DOWNLOAD_TIMER)
         try:
-            with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-                pwd = f.read()
+            try:
+                with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
+                    pwd = f.read()
+                    client.download_sig_and_key(path_to.down_url, pwd, path_to.outp_dir, VERIFY_SSL)
+                    client.generate_password(path_to.key_file, path_to.sig_file, path_to.pwd_file)
+            except Exception as e:
+                logging.error(f"Error reading password file: {e}")
+
+            # update path_to values
+            path_to.sig_file = Path(client.update_date_to_today(path_to.sig_file))
+            path_to.key_file = Path(client.update_date_to_today(path_to.key_file))
+            path_to.pwd_file = Path(client.update_date_to_today(path_to.pwd_file))
+            print("Downloaded files from collector.")
         except Exception as e:
-            print(f"Error reading password file: {e}")
-        client.download_sig_and_key(path_to.down_url, pwd, path_to.zip_file, VERIFY_SSL)
-        client.generate_password(path_to.key_file, path_to.sig_file, path_to.pwd_file)
+            logging.exception(f"Exception in download_from_collector: {e}")
 
-        # update path_to values
-        path_to.sig_file = os.path.join(path_to.sig_file, client.append_date_to_filename("ed25519_private.pem"))
-        path_to.key_file = os.path.join(path_to.key_file, client.append_date_to_filename("aes.key"))
-        path_to.pwd_file = os.path.join(path_to.pwd_file, client.append_date_to_filename("pwd.txt"))
-    except Exception as e:
-        logging.exception(f"Exception in download_from_collector: {e}")
-
-@scheduler.task('interval', id='daily_task', seconds=10 , next_run_time=datetime.now())
-def upload_pdns_data():
-    try:
-        # Connect to database and retrieve unuploaded DNS queries
-        logging.info(f"Connecting to database: {path_to.database}")
-        
-        with sqlite3.connect(path_to.database) as conn:
-            cursor = conn.cursor()
+def upload_loop():
+    while True:
+        time.sleep(UPLOAD_TIMER)
+        try:
+            # Connect to database and retrieve unuploaded DNS queries
+            logging.info(f"Connecting to database: {path_to.database}")
             
-            # Retrieve all rows where uploaded is False
-            cursor.execute("""
-                SELECT id, timestamp, domain, resolved_ip, status, received_at 
-                FROM dns_queries 
-                WHERE uploaded = FALSE
-            """)
-            
-            unuploaded_records = cursor.fetchall()
-            
-            if not unuploaded_records:
-                logging.info("No unuploaded DNS records found. Sending empty packet.")
+            with sqlite3.connect(path_to.database) as conn:
+                cursor = conn.cursor()
                 
-                # Create empty data packet
-                upload_data = []
-                record_count = 0
-                record_ids = []
+                # Retrieve all rows where uploaded is False
+                cursor.execute("""
+                    SELECT id, timestamp, domain, resolved_ip, status, received_at 
+                    FROM dns_queries 
+                    WHERE uploaded = FALSE
+                """)
                 
-            else:
-                logging.info(f"Found {len(unuploaded_records)} unuploaded DNS records.")
+                unuploaded_records = cursor.fetchall()
                 
-                # Extract the IDs for later update
-                record_ids = [record[0] for record in unuploaded_records]
-                record_count = len(unuploaded_records)
-                
-                # Prepare data for upload (excluding the ID column)
-                upload_data = []
-                for record in unuploaded_records:
-                    upload_data.append({
-                        'timestamp': record[1],
-                        'domain': record[2],
-                        'resolved_ip': record[3],
-                        'status': record[4],
-                        'received_at': record[5]
-                    })
-            
-            # Convert data to JSON string and then to binary
-            json_data = json.dumps(upload_data, indent=2)
-            
-            # Create temporary file for DNS data
-            pdns_data_file = os.path.join(tempfile.gettempdir(), "pdns.bin")
-            with open(pdns_data_file, 'wb') as f:
-                f.write(json_data.encode('utf-8'))
-            
-            logging.info(f"Created DNS data file: {pdns_data_file}")
-            
-            # Sign and package the file
-            zip_out_path = os.path.join(tempfile.gettempdir(), "zip_data.zip")
-            client.sign_and_package_file(pdns_data_file, path_to.sig_file, zip_out_path)
-            
-            # Read the zipped file
-            with open(zip_out_path, 'rb') as f:
-                zip_data = f.read()
-            
-            # Prepare payload: record_count + zip_data
-            # Serialize the payload
-            serialized_payload = json.dumps({'record_count': record_count}).encode('utf-8') + b'\n' + zip_data
-            
-            # Put payload into tempfile
-            unencrypted_payload = os.path.join(tempfile.gettempdir(), "udp_payload")
-            with open(unencrypted_payload, 'wb') as f:
-                f.write(serialized_payload)
-            
-            # Encrypt the payload file
-            encrypted_payload = os.path.join(tempfile.gettempdir(), "encrypted_udp_payload")
-            client.encrypt_file(unencrypted_payload, path_to.key_file, encrypted_payload)
-            
-            # Read the encrypted payload
-            with open(encrypted_payload, 'rb') as f:
-                encrypted_data = f.read()
-            
-            # Send via UDP
-            success = client.send_udp_data(encrypted_data, path_to.udp_host, path_to.udp_port)
-            
-            if success:
-                if record_count > 0:
-                    logging.info(f"Successfully uploaded {record_count} DNS records via UDP.")
+                if not unuploaded_records:
+                    logging.info("No unuploaded DNS records found. Sending empty packet.")
                     
-                    # Mark records as uploaded
-                    placeholders = ','.join(['?' for _ in record_ids])
-                    cursor.execute(f"""
-                        UPDATE dns_queries 
-                        SET uploaded = TRUE 
-                        WHERE id IN ({placeholders})
-                    """, record_ids)
+                    # Create empty data packet
+                    upload_data = []
+                    record_count = 0
+                    record_ids = []
                     
-                    conn.commit()
-                    logging.info(f"Marked {len(record_ids)} records as uploaded.")
                 else:
-                    logging.info("Successfully sent empty data packet via UDP.")
+                    logging.info(f"Found {len(unuploaded_records)} unuploaded DNS records.")
+                    
+                    # Extract the IDs for later update
+                    record_ids = [record[0] for record in unuploaded_records]
+                    record_count = len(unuploaded_records)
+                    
+                    # Prepare data for upload (excluding the ID column)
+                    upload_data = []
+                    for record in unuploaded_records:
+                        upload_data.append({
+                            'timestamp': record[1],
+                            'domain': record[2],
+                            'resolved_ip': record[3],
+                            'status': record[4],
+                            'received_at': record[5]
+                        })
                 
-            else:
-                logging.error("Failed to upload DNS data via UDP.")
-            
-            # Clean up temporary files
-            for temp_file in [pdns_data_file, zip_out_path, unencrypted_payload, encrypted_payload]:
-                try:
-                    if os.path.exists(temp_file):
-                        os.remove(temp_file)
-                        logging.debug(f"Cleaned up temporary file: {temp_file}")
-                except Exception as cleanup_error:
-                    logging.error(f"Error cleaning up {temp_file}: {cleanup_error}")
-            
-    except sqlite3.Error as e:
-        logging.error(f"[Database Error] Could not process DNS data upload: {e}")
-        logging.exception(f"Database error in upload_pdns_data: {e}")
-    except Exception as e:
-        logging.error(f"[Upload Error] Exception in upload_pdns_data: {e}")
-        logging.exception(f"Exception in upload_pdns_data: {e}")
+                # Convert data to JSON string and then to binary
+                json_data = json.dumps(upload_data, indent=2)
+                
+                # Create temporary file for DNS data
+                pdns_data_file = os.path.join(tempfile.gettempdir(), "pdns.bin")
+                with open(pdns_data_file, 'wb') as f:
+                    f.write(json_data.encode('utf-8'))
+                
+                logging.info(f"Created DNS data file: {pdns_data_file}")
+                
+                # Sign and package the file
+                zip_out_path = os.path.join(tempfile.gettempdir(), "zip_data.zip")
+                client.sign_and_package_file(pdns_data_file, path_to.sig_file, zip_out_path)
+                
+                # Read the zipped file
+                with open(zip_out_path, 'rb') as f:
+                    zip_data = f.read()
+                
+                # Prepare payload: record_count + zip_data
+                # Serialize the payload
+                serialized_payload = json.dumps({'record_count': record_count}).encode('utf-8') + b'\n' + zip_data
+                
+                # Put payload into tempfile
+                unencrypted_payload = os.path.join(tempfile.gettempdir(), "udp_payload")
+                with open(unencrypted_payload, 'wb') as f:
+                    f.write(serialized_payload)
+                
+                # Encrypt the payload file
+                encrypted_payload = os.path.join(tempfile.gettempdir(), "encrypted_udp_payload")
+                client.encrypt_file(unencrypted_payload, path_to.key_file, encrypted_payload)
+                
+                # Read the encrypted payload
+                with open(encrypted_payload, 'rb') as f:
+                    encrypted_data = f.read()
+                
+                # Send via UDP
+                success = client.send_udp_data(encrypted_data, path_to.udp_host, path_to.udp_port)
+                
+                if success:
+                    if record_count > 0:
+                        logging.info(f"Successfully uploaded {record_count} DNS records via UDP.")
+                        
+                        # Mark records as uploaded
+                        placeholders = ','.join(['?' for _ in record_ids])
+                        cursor.execute(f"""
+                            UPDATE dns_queries 
+                            SET uploaded = TRUE 
+                            WHERE id IN ({placeholders})
+                        """, record_ids)
+                        
+                        conn.commit()
+                        logging.info(f"Marked {len(record_ids)} records as uploaded.")
+                        print("gegegegegegegegegegegege")
+                    else:
+                        logging.info("Successfully sent empty data packet via UDP.")
+                    
+                else:
+                    logging.error("Failed to upload DNS data via UDP.")
+                
+                # Clean up temporary files
+                for temp_file in [pdns_data_file, zip_out_path, unencrypted_payload, encrypted_payload]:
+                    try:
+                        if os.path.exists(temp_file):
+                            os.remove(temp_file)
+                            logging.debug(f"Cleaned up temporary file: {temp_file}")
+                    except Exception as cleanup_error:
+                        logging.error(f"Error cleaning up {temp_file}: {cleanup_error}")
+                
+        except sqlite3.Error as e:
+            logging.error(f"[Database Error] Could not process DNS data upload: {e}")
+            logging.exception(f"Database error in upload_pdns_data: {e}")
+        except Exception as e:
+            logging.error(f"[Upload Error] Exception in upload_pdns_data: {e}")
+            logging.exception(f"Exception in upload_pdns_data: {e}")
 
 if __name__ == "__main__":
     client.init_database(path_to.database)
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    
+    # Start background threads
+    heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
 
-    while True:
-        client.send_heartbeat(PRIVACY_SHIELD_GUID, SHARED_SECRET, path_to.htbt_url)
-        time.sleep(5)  # replace with 300 for real 5-minute interval
+    sniffer_thread = threading.Thread(target=download_loop, daemon=True)
+    sniffer_thread.start()
+
+    secret_sync_thread = threading.Thread(target=upload_loop, daemon=True)
+    secret_sync_thread.start()
+
+    app.run(host='0.0.0.0', port=4000, debug=True)

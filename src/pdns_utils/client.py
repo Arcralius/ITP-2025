@@ -1,17 +1,18 @@
-import hashlib, logging, hmac, os, json, base64, tempfile, socket
-from datetime import datetime
+import hashlib, logging, hmac, os, json, base64, tempfile, socket, re
+from datetime import datetime, timezone
 from zipfile import ZipFile, BadZipFile
 import requests, config, sqlite3
 from Crypto.Signature import eddsa
-from Crypto.PublicKey import ECC
+from cryptography.hazmat.primitives import serialization
 from Crypto.Hash import SHA512
 from Crypto.Random import get_random_bytes
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import pad
+from pathlib import Path
 
-
+# TODO: make error checking/handling better
 def send_heartbeat(sensor_id, secret, heartbeat_url):
-    timestamp = datetime.isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
     message = f"{sensor_id}|{timestamp}"
     signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
@@ -27,10 +28,67 @@ def send_heartbeat(sensor_id, secret, heartbeat_url):
     except Exception as e:
         print(f"Error sending heartbeat: {e}")
 
-def append_date_to_filename(path: str) -> str:
-    base, ext = os.path.splitext(path)
-    date_str = datetime.now().strftime("%Y%m%d")
-    return f"{base}_{date_str}{ext}"
+def append_today_date_if_missing(file_path):
+    """
+    Check if any date in YYYYMMDD format is in the filename, if not, append today's date.
+    
+    Args:
+        file_path (str): The full file path to check
+        
+    Returns:
+        str: The updated file path with today's date appended if no date was present
+    """
+    # Extract directory, filename, and extension
+    dir_name, full_filename = os.path.split(file_path)
+    filename, ext = os.path.splitext(full_filename)
+    
+    # Check if any date in YYYYMMDD format is already in the filename
+    date_pattern = r'\d{8}'
+    if re.search(date_pattern, filename):
+        # Date already exists, return original path
+        return file_path
+    else:
+        # No date found, append today's date
+        today_str = datetime.now().strftime('%Y%m%d')
+        new_filename = f"{filename}_{today_str}{ext}"
+        new_file_path = os.path.join(dir_name, new_filename)
+        return new_file_path
+    
+def update_date_to_today(file_path):
+    """
+    Find any date in YYYYMMDD format in the filename and update it to today's date.
+    
+    Args:
+        file_path (str): The full file path to check and update
+        
+    Returns:
+        str: The updated file path with today's date
+    """
+    # Extract directory, filename, and extension
+    dir_name, full_filename = os.path.split(file_path)
+    filename, ext = os.path.splitext(full_filename)
+    
+    # Regex to find date in YYYYMMDD format
+    date_match = re.search(r'\d{8}', filename)
+    
+    # Get today's date in YYYYMMDD format
+    today_str = datetime.now().strftime('%Y%m%d')
+    
+    if date_match:
+        current_date_in_filename = date_match.group()
+        if current_date_in_filename != today_str:
+            # Replace the date in the filename with today's date
+            new_filename = filename[:date_match.start()] + today_str + filename[date_match.end():] + ext
+            new_file_path = os.path.join(dir_name, new_filename)
+            return new_file_path
+        else:
+            # Date is already today
+            return file_path
+    else:
+        # No date found, append today's date
+        new_filename = f"{filename}_{today_str}{ext}"
+        new_file_path = os.path.join(dir_name, new_filename)
+        return new_file_path
 
 def download_sig_and_key(download_url: str, password: str, output_dir: str, verify_ssl: bool = True):
     try:
@@ -70,106 +128,211 @@ def download_sig_and_key(download_url: str, password: str, output_dir: str, veri
         print(f"Error extracting ZIP file: {zip_err}")
     except Exception as err:
         print(f"An unexpected error occurred: {err}")
+class SigningError(Exception):
+    """Raised when file signing fails."""
+    pass
+class PackagingError(Exception):
+    """Raised when ZIP packaging fails."""
+    pass
 
+# FIXME: errors reading the Ed25519 private key file
 def sign_and_package_file(file_to_sign: str, private_key_file: str, output_path: str):
+    """
+    Sign a file and package it with its signature into a ZIP archive.
+    
+    Args:
+        file_to_sign: Path to the file to be signed
+        private_key_file: Path to the private key file
+        output_path: Path for the output ZIP file
+        
+    Returns:
+        bool: True if successful
+        
+    Raises:
+        FileNotFoundError: If input files don't exist
+        SigningError: If signing process fails
+        PackagingError: If ZIP creation fails
+    """
+    signature_file = None
+    
     try:
         # Load the private key for signing
         try:
             with open(private_key_file, 'rb') as key_file:
-                private_key = ECC.import_key(key_file.read())
+                private_key = serialization.load_pem_private_key(key_file.read(), password=None)
         except FileNotFoundError:
-            raise FileNotFoundError(f"Private key file {private_key_file} not found.")
+            raise
         except Exception as e:
-            raise Exception(f"Error loading private key: {e}")
-
+            raise SigningError(f"Error loading private key: {e}")
+            
         # Prepare the file to be signed
         try:
             with open(file_to_sign, 'rb') as f:
                 file_data = f.read()
         except FileNotFoundError:
-            raise FileNotFoundError(f"File to sign '{file_to_sign}' not found.")
+            raise
         except Exception as e:
-            raise Exception(f"Error reading file to sign: {e}")
-
+            raise SigningError(f"Error reading file to sign: {e}")
+            
         # Create the signature
         try:
-            signer = eddsa.new(private_key)
+            signer = eddsa.new(private_key, 'rfc8032')
             h = SHA512.new(file_data)
             signature = signer.sign(h)
         except Exception as e:
-            raise Exception(f"Error signing the file: {e}")
-
-        # Save the signature to the specified file
-        signature_file = append_date_to_filename(os.path.join(tempfile.gettempdir(), "signature.sig"))
+            raise SigningError(f"Error signing the file: {e}")
+            
+        # Save the signature to a temporary file
+        signature_file = append_today_date_if_missing(os.path.join(tempfile.gettempdir(), "signature.sig"))
         try:
             with open(signature_file, 'wb') as sig_file:
                 sig_file.write(signature)
         except Exception as e:
-            raise Exception(f"Error writing signature to file '{signature_file}': {e}")
-
+            raise SigningError(f"Error writing signature to file '{signature_file}': {e}")
+            
         # Package the file and signature into a ZIP archive
         try:
             with ZipFile(output_path, 'w') as zipf:
                 zipf.write(file_to_sign, os.path.basename(file_to_sign))
                 zipf.write(signature_file, os.path.basename(signature_file))
         except Exception as e:
-            raise Exception(f"Error creating ZIP archive '{output_path}': {e}")
-
+            raise PackagingError(f"Error creating ZIP archive '{output_path}': {e}")
+            
         print(f"File signed and packaged successfully. Output saved to: {output_path}")
-
-        # clean up
-        os.remove(signature_file)
-        print(f"Successfully cleaned up and removed: {signature_file}")
-
-    except Exception as e:
-        print(f"An error occurred: {e}")
+        
+    finally:
+        # Clean up temporary signature file if it was created
+        if signature_file and os.path.exists(signature_file):
+            try:
+                os.remove(signature_file)
+                print(f"Successfully cleaned up and removed: {signature_file}")
+            except Exception as cleanup_error:
+                print(f"Warning: Could not clean up temporary file {signature_file}: {cleanup_error}")
+                # Don't raise cleanup errors
+class EncryptionError(Exception):
+    """Custom exception for encryption-related errors"""
+    pass
+class KeyError(EncryptionError):
+    """Exception raised for key-related errors"""
+    pass
+class FileAccessError(EncryptionError):
+    """Exception raised for file access errors"""
+    pass
 
 def encrypt_file(file_to_encrypt: str, key_file: str, output_path: str):
+    """
+    Encrypt a file using AES encryption in CBC mode.
+    
+    Args:
+        file_to_encrypt: Path to the file to encrypt
+        key_file: Path to the file containing the AES key
+        output_path: Path where the encrypted file will be saved
+        
+    Raises:
+        KeyError: If key file issues occur
+        FileAccessError: If file access issues occur
+        EncryptionError: If encryption process fails
+        ValueError: If arguments are invalid
+    """
+    
+    # Validate input arguments
+    if not all([file_to_encrypt, key_file, output_path]):
+        raise ValueError("All file paths must be provided and non-empty")
+    
+    # Convert to Path objects for better path handling
+    file_to_encrypt_path = Path(file_to_encrypt)
+    key_file_path = Path(key_file)
+    output_path_path = Path(output_path)
+    
+    # Read and validate the AES key
     try:
-        # Read the AES key from the specified file
-        try:
-            with open(key_file, 'rb') as key_file:
-                aes_key = key_file.read()
-                if len(aes_key) != 32:
-                    raise ValueError("AES key must be 256 bits (32 bytes).")
-        except FileNotFoundError:
-            raise FileNotFoundError(f"Key file not found: {key_file}")
-        except Exception as e:
-            raise Exception(f"Error reading key file: {e}")
-
+        if not key_file_path.exists():
+            raise KeyError(f"Key file does not exist: {key_file}")
+        
+        if not key_file_path.is_file():
+            raise KeyError(f"Key file path is not a file: {key_file}")
+        
+        with open(key_file_path, 'rb') as kf:
+            aes_key = kf.read()
+            
+        if len(aes_key) == 0:
+            raise KeyError("Key file is empty")
+        elif len(aes_key) != 32:
+            raise KeyError(f"Invalid AES key size: {len(aes_key)} bytes. Expected 32 bytes (256 bits)")
+            
+    except (OSError, IOError) as e:
+        raise KeyError(f"Cannot read key file '{key_file}': {e}")
+    except KeyError:
+        raise
+    except Exception as e:
+        raise KeyError(f"Unexpected error reading key file '{key_file}': {e}")
+    
+    # Read the file to encrypt
+    try:
+        if not file_to_encrypt_path.exists():
+            raise FileAccessError(f"File to encrypt does not exist: {file_to_encrypt}")
+        
+        if not file_to_encrypt_path.is_file():
+            raise FileAccessError(f"Path is not a file: {file_to_encrypt}")
+        
+        file_size = file_to_encrypt_path.stat().st_size
+        if file_size == 0:
+            raise FileAccessError(f"File to encrypt is empty: {file_to_encrypt}")
+        
+        with open(file_to_encrypt_path, 'rb') as f:
+            plaintext = f.read()
+            
+    except (OSError, IOError) as e:
+        raise FileAccessError(f"Cannot read file to encrypt '{file_to_encrypt}': {e}")
+    except FileAccessError:
+        raise
+    except Exception as e:
+        raise FileAccessError(f"Unexpected error reading file to encrypt '{file_to_encrypt}': {e}")
+    
+    # Perform encryption
+    try:
         # Generate a random IV (Initialization Vector)
         iv = get_random_bytes(AES.block_size)
-
+        
         # Create AES cipher instance
         cipher = AES.new(aes_key, AES.MODE_CBC, iv)
-
-        # Read the file to encrypt
-        try:
-            with open(file_to_encrypt, 'rb') as f:
-                plaintext = f.read()
-        except FileNotFoundError:
-            raise FileNotFoundError(f"File to encrypt not found: {file_to_encrypt}")
-        except Exception as e:
-            raise Exception(f"Error reading file to encrypt: {e}")
-
+        
         # Pad the plaintext to be a multiple of AES.block_size
         padded_data = pad(plaintext, AES.block_size)
-
+        
         # Encrypt the padded data
         ciphertext = cipher.encrypt(padded_data)
-
-        # Write the IV and ciphertext to the output file
-        try:
-            with open(output_path, 'wb') as out_file:
-                out_file.write(iv)  # Prepend the IV to the ciphertext
-                out_file.write(ciphertext)
-            print(f"File encrypted successfully. Encrypted file saved to: {output_path}")
-        except Exception as e:
-            raise Exception(f"Error writing encrypted file: {e}")
-
+        
     except Exception as e:
-        print(f"An error occurred: {e}")
+        raise EncryptionError(f"Encryption process failed: {e}")
+    
+    # Write the encrypted data to output file
+    try:
+        # Ensure output directory exists
+        output_path_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Check if output file already exists and warn
+        if output_path_path.exists():
+            print(f"Warning: Output file already exists and will be overwritten: {output_path}")
+        
+        with open(output_path_path, 'wb') as out_file:
+            out_file.write(iv)  # Prepend the IV to the ciphertext
+            out_file.write(ciphertext)
+            
+        # Verify the file was written correctly
+        if not output_path_path.exists() or output_path_path.stat().st_size == 0:
+            raise FileAccessError("Output file was not created successfully")
+            
+        print(f"File encrypted successfully. Encrypted file saved to: {output_path}")
+        
+    except (OSError, IOError) as e:
+        raise FileAccessError(f"Cannot write encrypted file to '{output_path}': {e}")
+    except FileAccessError:
+        raise
+    except Exception as e:
+        raise FileAccessError(f"Unexpected error writing encrypted file to '{output_path}': {e}")
 
+# FIXME: the generated hash does not match with the server side generated hash (weird becuz there was no salt added, so why diff?)
 def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
     try:
         # Read AES key

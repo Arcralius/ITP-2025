@@ -17,7 +17,7 @@ SENSOR_ID = ""
 SHARED_SECRET = ""
 
 # Server URLs for all data submission
-SERVER_URL_BASE = "http://localhost:5000"
+SERVER_URL_BASE = "http://localhost:4000"
 SERVER_URL_HEARTBEAT = f"{SERVER_URL_BASE}/heartbeat"
 SERVER_URL_CAPTURED_UDP = f"{SERVER_URL_BASE}/captured_udp_packets"
 SERVER_URL_DNS_DATA = f"{SERVER_URL_BASE}/dns_data"

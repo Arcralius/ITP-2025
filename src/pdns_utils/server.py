@@ -9,22 +9,73 @@ from Crypto.PublicKey import ECC
 from Crypto.Hash import SHA512
 
 
-def append_date_to_filename(path: str) -> str:
-    base, ext = os.path.splitext(path)
-    date_str = datetime.now().strftime("%Y%m%d")
+def append_today_date_if_missing(file_path):
+    """
+    Check if any date in YYYYMMDD format is in the filename, if not, append today's date.
     
-    date_pattern = r'_\d{8}$'
+    Args:
+        file_path (str): The full file path to check
+        
+    Returns:
+        str: The updated file path with today's date appended if no date was present
+    """
+    # Extract directory, filename, and extension
+    dir_name, full_filename = os.path.split(file_path)
+    filename, ext = os.path.splitext(full_filename)
     
-    if re.search(date_pattern, base):
-        return path
+    # Check if any date in YYYYMMDD format is already in the filename
+    date_pattern = r'\d{8}'
+    if re.search(date_pattern, filename):
+        # Date already exists, return original path
+        return file_path
     else:
-        return f"{base}_{date_str}{ext}"
+        # No date found, append today's date
+        today_str = datetime.now().strftime('%Y%m%d')
+        new_filename = f"{filename}_{today_str}{ext}"
+        new_file_path = os.path.join(dir_name, new_filename)
+        return new_file_path
+    
+def update_date_to_today(file_path):
+    """
+    Find any date in YYYYMMDD format in the filename and update it to today's date.
+    
+    Args:
+        file_path (str): The full file path to check and update
+        
+    Returns:
+        str: The updated file path with today's date
+    """
+    # Extract directory, filename, and extension
+    dir_name, full_filename = os.path.split(file_path)
+    filename, ext = os.path.splitext(full_filename)
+    
+    # Regex to find date in YYYYMMDD format
+    date_match = re.search(r'\d{8}', filename)
+    
+    # Get today's date in YYYYMMDD format
+    today_str = datetime.now().strftime('%Y%m%d')
+    
+    if date_match:
+        current_date_in_filename = date_match.group()
+        if current_date_in_filename != today_str:
+            # Replace the date in the filename with today's date
+            new_filename = filename[:date_match.start()] + today_str + filename[date_match.end():] + ext
+            new_file_path = os.path.join(dir_name, new_filename)
+            return new_file_path
+        else:
+            # Date is already today
+            return file_path
+    else:
+        # No date found, append today's date
+        new_filename = f"{filename}_{today_str}{ext}"
+        new_file_path = os.path.join(dir_name, new_filename)
+        return new_file_path
 
 def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: str):
     # Append date to each filename
-    aes_key_path = append_date_to_filename(aes_key_path)
-    ed_priv_path = append_date_to_filename(ed_priv_path)
-    ed_pub_path = append_date_to_filename(ed_pub_path)
+    aes_key_path = append_today_date_if_missing(aes_key_path)
+    ed_priv_path = append_today_date_if_missing(ed_priv_path)
+    ed_pub_path = append_today_date_if_missing(ed_pub_path)
 
     # 1. Generate AES key
     aes_key = os.urandom(32)
@@ -55,10 +106,9 @@ def generate_keys_and_hash(aes_key_path: str, ed_priv_path: str, ed_pub_path: st
 
 def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
     # Append date to each filename
-    aes_key_path = append_date_to_filename(aes_key_path)
-    ed_priv_path = append_date_to_filename(ed_priv_path)
-    output_hash_path = append_date_to_filename(output_hash_path)
-
+    aes_key_path = append_today_date_if_missing(aes_key_path)
+    ed_priv_path = append_today_date_if_missing(ed_priv_path)
+    output_hash_path = append_today_date_if_missing(output_hash_path)
     try:
         # Read AES key
         with open(aes_key_path, 'rb') as f:
@@ -88,9 +138,9 @@ def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: st
 
 def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
     # Append date to each filename
-    aes_key_path = append_date_to_filename(aes_key_path)
-    ed_priv_path = append_date_to_filename(ed_priv_path)
-    output_zip_path = append_date_to_filename(output_zip_path)
+    aes_key_path = append_today_date_if_missing(aes_key_path)
+    ed_priv_path = append_today_date_if_missing(ed_priv_path)
+    output_zip_path = append_today_date_if_missing(output_zip_path)
 
     # Check both input files exist
     for path in (aes_key_path, ed_priv_path):
@@ -111,7 +161,7 @@ def zip_keys(aes_key_path: str, ed_priv_path: str, output_zip_path: str):
 def verify_password(password: str, password_file_path: str) -> bool:
     # TODO: right now it reads the password file as if it has multiple pwd genrated from multiple days, 
     # need to decide whether i want a file with pwd or 1 pwd 1 file
-    password_file_path = append_date_to_filename(password_file_path)
+    password_file_path = append_today_date_if_missing(password_file_path)
     try:
         with open(password_file_path, 'r', encoding='utf-8') as f:
             valid_password = f.read().strip()
@@ -138,61 +188,6 @@ def decode_request_data(request_data):
     except Exception as e:
         raise ValueError(f"An unexpected error occurred during payload processing: {e}")
     
-# Initialize PDNS database function
-def init_pdns_database(db_name="pdns.db"):
-    """Initializes the PDNS SQLite database and creates tables if they don't exist."""
-    print(f"Initializing PDNS database: {db_name}")
-    try:
-        with sqlite3.connect(db_name) as conn:
-            cursor = conn.cursor()
-
-            # Table for received PDNS data
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS pdns_data (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    domain TEXT NOT NULL,
-                    resolved_ip TEXT NOT NULL,
-                    status TEXT,
-                    received_at TEXT NOT NULL,
-                    processed_at TEXT NOT NULL
-                );
-            """)
-            print("- 'pdns_data' table created or already exists.")
-
-            # Table for tracking upload batches
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS upload_batches (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    batch_id TEXT UNIQUE NOT NULL,
-                    record_count INTEGER NOT NULL,
-                    received_at TEXT NOT NULL,
-                    status TEXT DEFAULT 'processed'
-                );
-            """)
-            print("- 'upload_batches' table created or already exists.")
-
-            # Indexes for better performance
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_pdns_domain ON pdns_data(domain);
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_pdns_timestamp ON pdns_data(timestamp);
-            """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_pdns_resolved_ip ON pdns_data(resolved_ip);
-            """)
-            print("- Indexes created or already exist.")
-
-            conn.commit()
-        print("PDNS database initialization complete.")
-    except sqlite3.Error as e:
-        print(f"[PDNS Database Error] An error occurred during initialization: {e}")
-        logging.exception(f"PDNS database initialization error: {e}")
-        return False
-    return True
-
-# Utility function to decrypt file
 def decrypt_file(encrypted_file_path, key_file_path, output_path):
     """Decrypts an AES-encrypted file."""
     try:
@@ -229,7 +224,6 @@ def decrypt_file(encrypted_file_path, key_file_path, output_path):
         logging.exception(f"Decryption error: {e}")
         return False
 
-# Utility function to verify signature
 def verify_signature(file_path, signature_file_path, public_key_path):
     """Verifies the EdDSA signature of a file."""
     try:

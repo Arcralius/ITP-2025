@@ -2,6 +2,7 @@ import sqlite3
 import hashlib
 import uuid 
 import os
+import logging
 
 
 def generate_password_hash(password: str) -> bytes:
@@ -16,7 +17,7 @@ def get_db_connection(database):
     return conn
 
 
-def init_db(database):
+def init_user_db(database):
     conn = get_db_connection(database)
     cursor = conn.cursor()
 
@@ -56,6 +57,61 @@ def init_db(database):
         print("Database already contains data.")
 
     conn.close()
+
+
+def init_pdns_db(db_name="pdns.db"):
+    """Initializes the PDNS SQLite database and creates tables if they don't exist."""
+    print(f"Initializing PDNS database: {db_name}")
+    try:
+        with sqlite3.connect(db_name) as conn:
+            cursor = conn.cursor()
+
+            # Table for received PDNS data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pdns_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    resolved_ip TEXT NOT NULL,
+                    status TEXT,
+                    received_at TEXT NOT NULL,
+                    processed_at TEXT NOT NULL
+                );
+            """)
+            print("- 'pdns_data' table created or already exists.")
+
+            # Table for tracking upload batches
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS upload_batches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    batch_id TEXT UNIQUE NOT NULL,
+                    record_count INTEGER NOT NULL,
+                    received_at TEXT NOT NULL,
+                    status TEXT DEFAULT 'processed'
+                );
+            """)
+            print("- 'upload_batches' table created or already exists.")
+
+            # Indexes for better performance
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pdns_domain ON pdns_data(domain);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pdns_timestamp ON pdns_data(timestamp);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_pdns_resolved_ip ON pdns_data(resolved_ip);
+            """)
+            print("- Indexes created or already exist.")
+
+            conn.commit()
+        print("PDNS database initialization complete.")
+    except sqlite3.Error as e:
+        print(f"[PDNS Database Error] An error occurred during initialization: {e}")
+        logging.exception(f"PDNS database initialization error: {e}")
+        return False
+    return True
+
 
 def guid_exists(guid_to_check, database):
     conn = None
