@@ -3,7 +3,7 @@ import hmac, os, sqlite3, tempfile, time, logging, json, threading
 from datetime import UTC, datetime
 from flask import Flask, jsonify, render_template, request
 from flask_apscheduler import APScheduler
-from pdns_utils import client
+from pdns_utils import client, database as db
 from pathlib import Path
 
 
@@ -11,24 +11,26 @@ from pathlib import Path
 app = Flask(__name__)
 class PATH_TO:
     outp_dir = ".//client_download//"
-    sig_file = client.append_today_date_if_missing(".//client_download//aes.key")
-    key_file = client.append_today_date_if_missing(".//client_download//ed25519_private.pem")
+    key_file = client.append_today_date_if_missing(".//client_download//aes.key")
+    sig_file = client.append_today_date_if_missing(".//client_download//ed25519_private.pem")
     pwd_file = client.append_today_date_if_missing(".//client_download//pwd.txt")
     zip_file = client.append_today_date_if_missing(".//client_download//archive.zip")
     database = "sensors.db"
     down_url = "http://localhost:5000/download"
     htbt_url = "http://localhost:5000/heartbeat"
 
+class UDP_CONF:
+    udp_port = 9999
+    udp_serv = "localhost"
+
+HEARTBEAT_GUID = db.get_random_guid_sql()
 HEARTBEAT_TIMER = 5
 DOWNLOAD_TIMER = 5
 UPLOAD_TIMER = 20
 VERIFY_SSL= False
 path_to = PATH_TO()
+udp_conf = UDP_CONF()
 scheduler = APScheduler()
-
-# TODO: implement functions
-SHARED_SECRET = "supersecretkey123"
-PRIVACY_SHIELD_GUID = "0aa71490-7992-4da2-bc81-439b37c0f354"
 
 # --- Flask Routes ---
 @app.route('/', methods=['GET'])
@@ -50,7 +52,7 @@ def dashboard():
             udp_packets = cursor.fetchall()
 
         # Render the HTML template with the fetched data
-        return render_template('dashboard.html', heartbeats=heartbeats, dns_queries=dns_queries, udp_packets=udp_packets)
+        return render_template('ps_dashboard.html', heartbeats=heartbeats, dns_queries=dns_queries, udp_packets=udp_packets)
     except sqlite3.Error as e:
         print(f"[Dashboard Error] Could not fetch data for dashboard: {e}")
         return "<h1>Error</h1><p>Could not connect to the database to fetch data.</p>", 500
@@ -58,7 +60,13 @@ def dashboard():
 @app.route('/heartbeat', methods=['POST'])
 def handle_heartbeat():
     """Receives, validates, and stores heartbeat signals."""
-    payload = client.validate_request(request.data, SHARED_SECRET)
+    try:
+        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
+            pwd = f.readline().strip()
+    except Exception as e:
+        print(f"Error reading password file: {e}")
+
+    payload = client.validate_request(request.data, pwd)
     if not payload:
         return jsonify({"status": "error", "message": "Invalid request"}), 403
 
@@ -79,7 +87,12 @@ def handle_heartbeat():
 @app.route('/dns_data', methods=['POST'])
 def handle_dns_data():
     """Receives, validates, and stores captured DNS query data."""
-    payload = client.validate_request(request.data, SHARED_SECRET)
+    try:
+        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
+            pwd = f.readline().strip()
+    except Exception as e:
+        print(f"Error reading password file: {e}")
+    payload = client.validate_request(request.data, pwd)
     if not payload:
         return jsonify({"status": "error", "message": "Invalid request"}), 403
 
@@ -117,7 +130,12 @@ def handle_dns_data():
 @app.route('/captured_udp_packets', methods=['POST'])
 def handle_captured_udp():
     """Receives, validates, and stores general UDP packet information."""
-    payload = client.validate_request(request.data, SHARED_SECRET)
+    try:
+        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
+            pwd = f.readline().strip()
+    except Exception as e:
+        print(f"Error reading password file: {e}")
+    payload = client.validate_request(request.data, pwd)
     if not payload:
         return jsonify({"status": "error", "message": "Invalid request"}), 403
 
@@ -166,12 +184,11 @@ def get_secret():
         return jsonify({"status": "error", "message": "Missing authentication headers"}), 400
 
     # Validate the signature using the current secret
-    # try:
-    #     with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-    #         pwd = f.read()
-    # except Exception as e:
-    #     print(f"Error reading password file: {e}")
-    pwd = SHARED_SECRET
+    try:
+        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
+            pwd = f.readline().strip()
+    except Exception as e:
+        print(f"Error reading password file: {e}")
 
     server_signature = client.generate_signature(sensor_id, timestamp, pwd)
     if hmac.compare_digest(server_signature, client_signature):
@@ -182,8 +199,10 @@ def get_secret():
         return jsonify({"status": "error", "message": "Invalid signature"}), 403
 
 def heartbeat_loop():
+    with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
+        password = f.readline().strip()
     while True:
-        client.send_heartbeat(PRIVACY_SHIELD_GUID, SHARED_SECRET, path_to.htbt_url)
+        client.send_heartbeat(HEARTBEAT_GUID, password, path_to.htbt_url)
         print("heartbeat sent to collector")
         time.sleep(HEARTBEAT_TIMER)
 
@@ -193,9 +212,9 @@ def download_loop():
         try:
             try:
                 with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-                    pwd = f.read()
+                    pwd = f.read().strip()
                     client.download_sig_and_key(path_to.down_url, pwd, path_to.outp_dir, VERIFY_SSL)
-                    client.generate_password(path_to.key_file, path_to.sig_file, path_to.pwd_file)
+                client.generate_password(path_to.key_file, path_to.sig_file, path_to.pwd_file)
             except Exception as e:
                 logging.error(f"Error reading password file: {e}")
 
@@ -253,42 +272,27 @@ def upload_loop():
                         })
                 
                 # Convert data to JSON string and then to binary
-                json_data = json.dumps(upload_data, indent=2)
-                
-                # Create temporary file for DNS data
-                pdns_data_file = os.path.join(tempfile.gettempdir(), "pdns.bin")
-                with open(pdns_data_file, 'wb') as f:
-                    f.write(json_data.encode('utf-8'))
-                
-                logging.info(f"Created DNS data file: {pdns_data_file}")
-                
-                # Sign and package the file
-                zip_out_path = os.path.join(tempfile.gettempdir(), "zip_data.zip")
-                client.sign_and_package_file(pdns_data_file, path_to.sig_file, zip_out_path)
-                
-                # Read the zipped file
-                with open(zip_out_path, 'rb') as f:
-                    zip_data = f.read()
-                
-                # Prepare payload: record_count + zip_data
+                json_data = json.dumps(upload_data, indent=2).encode('utf-8')
+                rec_count = json.dumps({'record_count': record_count}).encode('utf-8')
+                                
                 # Serialize the payload
-                serialized_payload = json.dumps({'record_count': record_count}).encode('utf-8') + b'\n' + zip_data
+                serialized_payload = rec_count + b'\n' + json_data
                 
                 # Put payload into tempfile
-                unencrypted_payload = os.path.join(tempfile.gettempdir(), "udp_payload")
+                unencrypted_payload = os.path.join(tempfile.gettempdir(), "unencrypted_udp_payload")
                 with open(unencrypted_payload, 'wb') as f:
                     f.write(serialized_payload)
                 
                 # Encrypt the payload file
                 encrypted_payload = os.path.join(tempfile.gettempdir(), "encrypted_udp_payload")
-                client.encrypt_file(unencrypted_payload, path_to.key_file, encrypted_payload)
+                client.sign_zip_encrypt(unencrypted_payload, path_to.sig_file, path_to.key_file, encrypted_payload)
                 
                 # Read the encrypted payload
                 with open(encrypted_payload, 'rb') as f:
                     encrypted_data = f.read()
                 
                 # Send via UDP
-                success = client.send_udp_data(encrypted_data, path_to.udp_host, path_to.udp_port)
+                success = client.send_udp_data(encrypted_data, udp_conf.udp_serv, udp_conf.udp_port)
                 
                 if success:
                     if record_count > 0:
@@ -304,7 +308,6 @@ def upload_loop():
                         
                         conn.commit()
                         logging.info(f"Marked {len(record_ids)} records as uploaded.")
-                        print("gegegegegegegegegegegege")
                     else:
                         logging.info("Successfully sent empty data packet via UDP.")
                     
@@ -312,7 +315,7 @@ def upload_loop():
                     logging.error("Failed to upload DNS data via UDP.")
                 
                 # Clean up temporary files
-                for temp_file in [pdns_data_file, zip_out_path, unencrypted_payload, encrypted_payload]:
+                for temp_file in [unencrypted_payload, encrypted_payload]:
                     try:
                         if os.path.exists(temp_file):
                             os.remove(temp_file)
@@ -328,7 +331,7 @@ def upload_loop():
             logging.exception(f"Exception in upload_pdns_data: {e}")
 
 if __name__ == "__main__":
-    client.init_database(path_to.database)
+    db.init_sensor_db(path_to.database)
     
     # Start background threads
     heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)

@@ -1,5 +1,4 @@
 import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, zipfile, shutil, threading
-from collections import defaultdict
 from datetime import datetime, timezone, UTC
 from functools import wraps
 import config
@@ -20,17 +19,158 @@ except Exception as e:
 os.makedirs(config.LOG_DIR, exist_ok=True)
 os.makedirs(config.KEY_STORE_DIR, exist_ok=True)
 
+# FIXME: pdns data tables not showing any data, linked to not being able to download data properly
+@app.route('/')
+def dashboard():
+    return render_template('co_dashboard.html')
 
-# TODO: show 2 tables -> all pdns + all status
-@app.route('/', methods=['GET'])
-def index():
-    """Renders the index.html for general logs."""
-    collected_entries = [] # Placeholder if not globally managed anymore
-    grouped = defaultdict(list)
-    for entry in collected_entries: # This part might need adjustment if `collected_entries` is no longer populated
-        grouped[entry['time']].append(entry['content'])
+# API route for PDNS data
+@app.route('/api/pdns-data')
+def get_pdns_data():
+    try:
+        conn = db.get_db_connection(config.PDNS_DATABASE)
+        if conn is None:
+            return jsonify({'data': [], 'error': 'Database connection failed'})
+        
+        cursor = conn.execute('''
+            SELECT id, timestamp, domain, resolved_ip, status, received_at, processed_at
+            FROM pdns_data
+            ORDER BY received_at DESC
+        ''')
+        rows = cursor.fetchall()
+        
+        data = []
+        for row in rows:
+            data.append({
+                'id': row['id'],
+                'timestamp': row['timestamp'],
+                'domain': row['domain'],
+                'resolved_ip': row['resolved_ip'],
+                'status': row['status'],
+                'received_at': row['received_at'],
+                'processed_at': row['processed_at']
+            })
+        
+        conn.close()
+        print(f"PDNS API: Returning {len(data)} records")
+        return jsonify({'data': data})
+        
+    except Exception as e:
+        print(f"Error in PDNS API: {e}")
+        return jsonify({'data': [], 'error': str(e)})
 
-    return render_template('index.html', grouped=dict(sorted(grouped.items(), reverse=True)))
+# API route for upload batches data
+@app.route('/api/upload-batches')
+def get_upload_batches():
+    try:
+        conn = db.get_db_connection(config.PDNS_DATABASE)
+        if conn is None:
+            return jsonify({'data': [], 'error': 'Database connection failed'})
+        
+        cursor = conn.execute('''
+            SELECT id, batch_id, record_count, received_at, status
+            FROM upload_batches
+            ORDER BY received_at DESC
+        ''')
+        rows = cursor.fetchall()
+        
+        data = []
+        for row in rows:
+            data.append({
+                'id': row['id'],
+                'batch_id': row['batch_id'],
+                'record_count': row['record_count'],
+                'received_at': row['received_at'],
+                'status': row['status']
+            })
+        
+        conn.close()
+        print(f"Batches API: Returning {len(data)} records")
+        return jsonify({'data': data})
+        
+    except Exception as e:
+        print(f"Error in Batches API: {e}")
+        return jsonify({'data': [], 'error': str(e)})
+# API route for heartbeat data
+@app.route('/api/heartbeats')
+def get_heartbeats():
+    heartbeats = []
+    log_file_path = './heartbeats.jsonl'
+    
+    try:
+        if os.path.exists(log_file_path):
+            with open(log_file_path, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            heartbeat = json.loads(line)
+                            heartbeats.append({
+                                'sensor_id': heartbeat.get('sensor_id', ''),
+                                'timestamp': heartbeat.get('timestamp', ''),
+                                'received_at': heartbeat.get('received_at', '')
+                            })
+                        except json.JSONDecodeError:
+                            continue
+        
+        # Sort by received_at descending
+        heartbeats.sort(key=lambda x: x['received_at'], reverse=True)
+        
+        return jsonify({'data': heartbeats})
+    except Exception as e:
+        return jsonify({'data': [], 'error': str(e)})
+
+@app.route('/debug')
+def debug():
+    debug_info = {
+        'database_connection': False,
+        'pdns_table_exists': False,
+        'upload_batches_table_exists': False,
+        'pdns_count': 0,
+        'batches_count': 0,
+        'heartbeats_file_exists': False,
+        'errors': []
+    }
+    
+    try:
+        conn = db.get_db_connection(config.PDNS_DATABASE)
+        if conn:
+            debug_info['database_connection'] = True
+            
+            # Check if tables exist
+            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = [row[0] for row in cursor.fetchall()]
+            
+            debug_info['pdns_table_exists'] = 'pdns_data' in tables
+            debug_info['upload_batches_table_exists'] = 'upload_batches' in tables
+            
+            # Count records if tables exist
+            if debug_info['pdns_table_exists']:
+                cursor = conn.execute("SELECT COUNT(*) FROM pdns_data")
+                debug_info['pdns_count'] = cursor.fetchone()[0]
+            
+            if debug_info['upload_batches_table_exists']:
+                cursor = conn.execute("SELECT COUNT(*) FROM upload_batches")
+                debug_info['batches_count'] = cursor.fetchone()[0]
+            
+            conn.close()
+        else:
+            debug_info['errors'].append('Could not establish database connection')
+    
+    except Exception as e:
+        debug_info['errors'].append(f'Database error: {str(e)}')
+    
+    # Check heartbeats file
+    try:
+        debug_info['heartbeats_file_exists'] = os.path.exists('./logs/heartbeats.jsonl')
+        if debug_info['heartbeats_file_exists']:
+            with open('./logs/heartbeats.jsonl', 'r') as f:
+                line_count = sum(1 for line in f if line.strip())
+                debug_info['heartbeats_count'] = line_count
+    except Exception as e:
+        debug_info['errors'].append(f'Heartbeats file error: {str(e)}')
+    
+    return jsonify(debug_info)
 
 @scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
 def daily_task():
@@ -61,14 +201,11 @@ def serve_KeySig():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
+# FIXME: log file generating in ./ instead of ./logs/
 @app.route("/heartbeat", methods=["POST"])
 def heartbeat():
     """Receives and validates sensor heartbeat signals, logging them to file."""
-    try:
-        data = server.decode_request_data(request.data)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-
+    data = request.json
     sensor_id = data.get("sensor_id")
     timestamp = data.get("timestamp")
     signature = data.get("signature")
@@ -77,7 +214,8 @@ def heartbeat():
         return jsonify({"error": "Missing fields"}), 400
     
     if db.guid_exists(sensor_id, config.USER_DATABASE):
-        with open(config.PASS_PATH, 'r', encoding='utf-8') as f:
+        pwd_path = server.append_today_date_if_missing(config.PASS_PATH)
+        with open(pwd_path, 'r', encoding='utf-8') as f:
             password = f.readline().strip()
     
     message = f"{sensor_id}|{timestamp}"
@@ -97,6 +235,7 @@ def heartbeat():
     print(f"Heartbeat from {sensor_id} received and validated, logged to file.")
     return jsonify({"status": "alive"}), 200
 
+# FIXME: not recieving/parsing pdns data properly 
 class UDPDNSReceiver:
     def __init__(self, host='0.0.0.0', port=9999, max_packet_size=65507):
         self.host = host
@@ -139,7 +278,7 @@ class UDPDNSReceiver:
             self.sock.close()
             
     def process_received_data(self, encrypted_data, client_address):
-        """Process received DNS data and send acknowledgment."""
+        """Process received DNS data matching upload_loop() format."""
         try:
             # Create temporary directory for processing
             temp_dir = tempfile.mkdtemp()
@@ -150,9 +289,9 @@ class UDPDNSReceiver:
                 with open(encrypted_file_path, 'wb') as f:
                     f.write(encrypted_data)
                 
-                # Decrypt the data
+                # Decrypt the data using your existing decrypt function
                 decrypted_file_path = os.path.join(temp_dir, "decrypted_data")
-                if not server.decrypt_file(encrypted_file_path, config.AES_KEY_PATH, decrypted_file_path):
+                if not server.decrypt_unzip_verify(encrypted_file_path, config.ED_PUB_PATH, config.AES_KEY_PATH, decrypted_file_path):
                     logging.error(f"Decryption failed for data from {client_address}")
                     return
                 
@@ -160,19 +299,24 @@ class UDPDNSReceiver:
                 with open(decrypted_file_path, 'rb') as f:
                     decrypted_data = f.read()
                 
-                # Parse the payload: JSON header + zip data
+                # Parse the payload format from upload_loop():
+                # rec_count (JSON) + '\n' + json_data (JSON)
                 try:
-                    # Find the separator between JSON header and zip data
+                    # Find the separator between record count and DNS data
                     separator_pos = decrypted_data.find(b'\n')
                     if separator_pos == -1:
-                        raise ValueError("Invalid payload format")
+                        raise ValueError("Invalid payload format - no separator found")
                     
-                    json_header = decrypted_data[:separator_pos]
-                    zip_data = decrypted_data[separator_pos + 1:]
+                    # Parse record count (first part)
+                    rec_count_data = decrypted_data[:separator_pos]
+                    dns_json_data = decrypted_data[separator_pos + 1:]
                     
-                    # Parse JSON header
-                    header_info = json.loads(json_header.decode('utf-8'))
-                    record_count = header_info.get('record_count', 0)
+                    # Parse record count JSON
+                    rec_count_info = json.loads(rec_count_data.decode('utf-8'))
+                    record_count = rec_count_info.get('record_count', 0)
+                    
+                    # Parse DNS records JSON
+                    dns_records = json.loads(dns_json_data.decode('utf-8'))
                     
                     logging.info(f"Received payload from {client_address} with record_count: {record_count}")
                     
@@ -180,8 +324,16 @@ class UDPDNSReceiver:
                     logging.error(f"Failed to parse payload from {client_address}: {e}")
                     return
                 
+                # Validate data consistency
+                if not isinstance(dns_records, list):
+                    logging.error(f"Invalid DNS data format from {client_address} - expected list")
+                    return
+                
+                if len(dns_records) != record_count:
+                    logging.warning(f"Record count mismatch from {client_address}: reported {record_count}, received {len(dns_records)}")
+                
                 # Handle empty data packet (record_count = 0)
-                if record_count == 0:
+                if record_count == 0 and len(dns_records) == 0:
                     logging.info(f"Received empty data packet from {client_address}")
                     
                     # Generate unique batch ID for empty packet
@@ -194,9 +346,9 @@ class UDPDNSReceiver:
                         
                         # Insert batch record for empty packet
                         cursor.execute("""
-                            INSERT INTO upload_batches (batch_id, record_count, received_at, status)
-                            VALUES (?, ?, ?, ?)
-                        """, (batch_id, 0, processed_at, 'processed'))
+                            INSERT INTO upload_batches (batch_id, record_count, received_at, status, client_address)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (batch_id, 0, processed_at, 'processed', str(client_address)))
                         
                         conn.commit()
                     
@@ -204,89 +356,34 @@ class UDPDNSReceiver:
                     return
                 
                 # Process non-empty data packets
-                # Save zip data to file
-                zip_file_path = os.path.join(temp_dir, "received_data.zip")
-                with open(zip_file_path, 'wb') as f:
-                    f.write(zip_data)
-                
-                # Extract the ZIP file
-                extract_dir = os.path.join(temp_dir, "extracted")
-                os.makedirs(extract_dir, exist_ok=True)
-                
-                with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_dir)
-                
-                # Find the data file and signature file
-                extracted_files = os.listdir(extract_dir)
-                data_file = None
-                signature_file = None
-                
-                for filename in extracted_files:
-                    if filename.endswith('.bin'):
-                        data_file = os.path.join(extract_dir, filename)
-                    elif filename.endswith('.sig'):
-                        signature_file = os.path.join(extract_dir, filename)
-                
-                if not data_file:
-                    logging.error(f"Data file not found in ZIP from {client_address}")
-                    return
-                
-                # Verify signature if available
-                if signature_file and os.path.exists(config.ED_PUB_PATH):
-                    if not server.verify_signature(data_file, signature_file, config.ED_PUB_PATH):
-                        logging.error(f"Signature verification failed for data from {client_address}")
-                        return
-                    else:
-                        logging.info(f"Signature verification successful for data from {client_address}")
-                else:
-                    logging.warning(f"Public key not found, skipping signature verification for {client_address}")
-                    return
-                
-                # Read and parse the DNS data
-                with open(data_file, 'rb') as f:
-                    dns_data_bytes = f.read()
-                
-                # Convert from binary to JSON
-                dns_data_str = dns_data_bytes.decode('utf-8')
-                dns_records = json.loads(dns_data_str)
-                
-                if not isinstance(dns_records, list):
-                    logging.error(f"Invalid data format from {client_address}")
-                    return
-                
-                # Check length
-                if len(dns_records) == record_count:
-                    logging.info("Reported record length matches record length received")
-                else:
-                    logging.error("Reported record length does not match record length received")
-
                 # Generate unique batch ID
                 batch_id = f"batch_{int(time.time())}_{os.urandom(4).hex()}"
-                
-                # Store data in PDNS database
                 processed_at = datetime.now(UTC).isoformat()
                 
+                # Store data in PDNS database
                 with sqlite3.connect(config.PDNS_DATABASE) as conn:
                     cursor = conn.cursor()
                     
                     # Insert batch record
                     cursor.execute("""
-                        INSERT INTO upload_batches (batch_id, record_count, received_at, status)
-                        VALUES (?, ?, ?, ?)
-                    """, (batch_id, len(dns_records), processed_at, 'processed'))
+                        INSERT INTO upload_batches (batch_id, record_count, received_at, status, client_address)
+                        VALUES (?, ?, ?, ?, ?)
+                    """, (batch_id, len(dns_records), processed_at, 'processed', str(client_address)))
                     
                     # Insert DNS records
                     for record in dns_records:
+                        # Validate required fields match upload_loop() format
                         cursor.execute("""
-                            INSERT INTO pdns_data (timestamp, domain, resolved_ip, status, received_at, processed_at)
-                            VALUES (?, ?, ?, ?, ?, ?)
+                            INSERT INTO pdns_data (timestamp, domain, resolved_ip, status, received_at, processed_at, batch_id)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                         """, (
                             record.get('timestamp'),
                             record.get('domain'),
                             record.get('resolved_ip'),
                             record.get('status'),
                             record.get('received_at'),
-                            processed_at
+                            processed_at,
+                            batch_id
                         ))
                     
                     conn.commit()

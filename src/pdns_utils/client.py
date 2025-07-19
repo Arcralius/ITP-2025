@@ -1,23 +1,27 @@
-import hashlib, logging, hmac, os, json, base64, tempfile, socket, re
+import hashlib, logging, hmac, os, json, base64, tempfile, socket, re, logging
 from datetime import datetime, timezone
-from zipfile import ZipFile, BadZipFile
-import requests, config, sqlite3
-from Crypto.Signature import eddsa
-from cryptography.hazmat.primitives import serialization
-from Crypto.Hash import SHA512
-from Crypto.Random import get_random_bytes
-from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
+from zipfile import ZipFile, BadZipFile, ZIP_DEFLATED
+import requests, config
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.exceptions import InvalidSignature
+import secrets
 from pathlib import Path
 
-# TODO: make error checking/handling better
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 def send_heartbeat(sensor_id, secret, heartbeat_url):
     timestamp = datetime.now(timezone.utc).isoformat()
     message = f"{sensor_id}|{timestamp}"
     signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
     payload = {
-        "sensor_id": config.SENSOR_ID,
+        "sensor_id": sensor_id,
         "timestamp": timestamp,
         "signature": signature
     }
@@ -28,6 +32,63 @@ def send_heartbeat(sensor_id, secret, heartbeat_url):
     except Exception as e:
         print(f"Error sending heartbeat: {e}")
 
+def decode_request_data(request_data):
+    if not request_data:
+        raise ValueError("No data received")
+    try:
+        # 1. Base64 decode
+        decoded_base64 = base64.b64decode(request_data)
+        # 2. UTF-8 decode
+        decoded_utf8 = decoded_base64.decode('utf-8')
+        # 3. JSON load
+        return json.loads(decoded_utf8)
+    except (base64.binascii.Error, json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ValueError(f"Invalid payload format (Base64/JSON decode error): {e}")
+    except Exception as e:
+        raise ValueError(f"An unexpected error occurred during payload processing: {e}")
+
+def generate_signature(sensor_id, timestamp, secret):
+    """Generates an HMAC-SHA256 signature for validation."""
+    message = f"{sensor_id}|{timestamp}"
+    return hmac.new(secret.encode('utf-8'), message.encode('utf-8'), hashlib.sha256).hexdigest()
+
+def validate_request(data, secret):
+    """
+    Validates the incoming request by checking its signature.
+    Returns the decoded payload if valid, otherwise returns None.
+    """
+    try:
+        # Decode the base64 payload
+        decoded_payload = base64.b64decode(data)
+        payload = json.loads(decoded_payload)
+
+        # Extract components for signature verification
+        sensor_id = payload.get("sensor_id")
+        timestamp = payload.get("timestamp")
+        client_signature = payload.get("signature")
+
+        if not all([sensor_id, timestamp, client_signature]):
+            print("[Validation Error] Missing required fields in payload.")
+            return None
+
+        # Generate the signature on the server side to compare
+        server_signature = generate_signature(sensor_id, timestamp, secret)
+
+        # Securely compare signatures
+        if hmac.compare_digest(server_signature, client_signature):
+            return payload
+        else:
+            print(f"[Validation Error] Invalid signature for sensor {sensor_id}.")
+            return None
+
+    except (json.JSONDecodeError, base64.binascii.Error) as e:
+        print(f"[Validation Error] Could not decode or parse payload: {e}")
+        return None
+    except Exception as e:
+        print(f"[Validation Error] An unexpected error occurred: {e}")
+        return None
+
+# --- datetime to filename ---
 def append_today_date_if_missing(file_path):
     """
     Check if any date in YYYYMMDD format is in the filename, if not, append today's date.
@@ -90,6 +151,7 @@ def update_date_to_today(file_path):
         new_file_path = os.path.join(dir_name, new_filename)
         return new_file_path
 
+# --- key sig download + pwd gen --- 
 def download_sig_and_key(download_url: str, password: str, output_dir: str, verify_ssl: bool = True):
     try:
         # Prepare the POST data
@@ -128,359 +190,209 @@ def download_sig_and_key(download_url: str, password: str, output_dir: str, veri
         print(f"Error extracting ZIP file: {zip_err}")
     except Exception as err:
         print(f"An unexpected error occurred: {err}")
-class SigningError(Exception):
-    """Raised when file signing fails."""
-    pass
-class PackagingError(Exception):
+
     """Raised when ZIP packaging fails."""
     pass
 
-# FIXME: errors reading the Ed25519 private key file
-def sign_and_package_file(file_to_sign: str, private_key_file: str, output_path: str):
+def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: str) -> bool:
     """
-    Sign a file and package it with its signature into a ZIP archive.
+    Compute the hash of AES key and ED25519 private key files and write to output file.
     
     Args:
-        file_to_sign: Path to the file to be signed
-        private_key_file: Path to the private key file
-        output_path: Path for the output ZIP file
+        aes_key_path: Path to the AES key file
+        ed_priv_path: Path to the ED25519 private key file
+        output_hash_path: Path where the computed hash will be written
         
     Returns:
-        bool: True if successful
-        
-    Raises:
-        FileNotFoundError: If input files don't exist
-        SigningError: If signing process fails
-        PackagingError: If ZIP creation fails
+        bool: True if successful, False if any error occurred
     """
-    signature_file = None
-    
     try:
-        # Load the private key for signing
+        # Convert to Path objects for better path handling
+        aes_path = Path(append_today_date_if_missing(aes_key_path))
+        ed25519_path = Path(append_today_date_if_missing(ed_priv_path))
+        output_path = Path(append_today_date_if_missing(output_hash_path))
+        
+        logger.info(f"Starting hash computation for keys: {aes_path} and {ed25519_path}")
+        
+        # Check if input files exist
+        if not aes_path.exists():
+            logger.error(f"AES key file not found: {aes_path}")
+            return False
+            
+        if not ed25519_path.exists():
+            logger.error(f"ED25519 private key file not found: {ed25519_path}")
+            return False
+        
+        # Read AES key file
         try:
-            with open(private_key_file, 'rb') as key_file:
-                private_key = serialization.load_pem_private_key(key_file.read(), password=None)
-        except FileNotFoundError:
-            raise
+            with open(aes_path, 'rb') as f:
+                aes_key_data = f.read()
+            logger.info(f"Successfully read AES key file ({len(aes_key_data)} bytes)")
+        except IOError as e:
+            logger.error(f"Failed to read AES key file {aes_path}: {e}")
+            return False
         except Exception as e:
-            raise SigningError(f"Error loading private key: {e}")
-            
-        # Prepare the file to be signed
+            logger.error(f"Unexpected error reading AES key file {aes_path}: {e}")
+            return False
+        
+        # Read ED25519 private key file
         try:
-            with open(file_to_sign, 'rb') as f:
-                file_data = f.read()
-        except FileNotFoundError:
-            raise
+            with open(ed25519_path, 'rb') as f:
+                ed25519_key_data = f.read()
+            logger.info(f"Successfully read ED25519 key file ({len(ed25519_key_data)} bytes)")
+        except IOError as e:
+            logger.error(f"Failed to read ED25519 key file {ed25519_path}: {e}")
+            return False
         except Exception as e:
-            raise SigningError(f"Error reading file to sign: {e}")
+            logger.error(f"Unexpected error reading ED25519 key file {ed25519_path}: {e}")
+            return False
+        
+        # Validate that files are not empty
+        if len(aes_key_data) == 0:
+            logger.error(f"AES key file is empty: {aes_path}")
+            return False
             
-        # Create the signature
+        if len(ed25519_key_data) == 0:
+            logger.error(f"ED25519 key file is empty: {ed25519_path}")
+            return False
+        
+        # Compute hash of both keys combined
         try:
-            signer = eddsa.new(private_key, 'rfc8032')
-            h = SHA512.new(file_data)
-            signature = signer.sign(h)
+            hasher = hashlib.sha256()
+            hasher.update(aes_key_data)
+            hasher.update(ed25519_key_data)
+            combined_hash = hasher.hexdigest()
+            logger.info(f"Successfully computed SHA256 hash: {combined_hash}")
         except Exception as e:
-            raise SigningError(f"Error signing the file: {e}")
-            
-        # Save the signature to a temporary file
-        signature_file = append_today_date_if_missing(os.path.join(tempfile.gettempdir(), "signature.sig"))
+            logger.error(f"Failed to compute hash: {e}")
+            return False
+        
+        # Create output directory if it doesn't exist
         try:
-            with open(signature_file, 'wb') as sig_file:
-                sig_file.write(signature)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            raise SigningError(f"Error writing signature to file '{signature_file}': {e}")
-            
-        # Package the file and signature into a ZIP archive
+            logger.error(f"Failed to create output directory {output_path.parent}: {e}")
+            return False
+        
+        # Write hash to output file
         try:
-            with ZipFile(output_path, 'w') as zipf:
-                zipf.write(file_to_sign, os.path.basename(file_to_sign))
-                zipf.write(signature_file, os.path.basename(signature_file))
+            with open(output_path, 'w') as f:
+                f.write(combined_hash + '\n')
+            logger.info(f"Successfully wrote hash to output file: {output_path}")
+        except IOError as e:
+            logger.error(f"Failed to write to output file {output_path}: {e}")
+            return False
         except Exception as e:
-            raise PackagingError(f"Error creating ZIP archive '{output_path}': {e}")
-            
-        print(f"File signed and packaged successfully. Output saved to: {output_path}")
+            logger.error(f"Unexpected error writing to output file {output_path}: {e}")
+            return False
         
-    finally:
-        # Clean up temporary signature file if it was created
-        if signature_file and os.path.exists(signature_file):
-            try:
-                os.remove(signature_file)
-                print(f"Successfully cleaned up and removed: {signature_file}")
-            except Exception as cleanup_error:
-                print(f"Warning: Could not clean up temporary file {signature_file}: {cleanup_error}")
-                # Don't raise cleanup errors
-class EncryptionError(Exception):
-    """Custom exception for encryption-related errors"""
-    pass
-class KeyError(EncryptionError):
-    """Exception raised for key-related errors"""
-    pass
-class FileAccessError(EncryptionError):
-    """Exception raised for file access errors"""
-    pass
-
-def encrypt_file(file_to_encrypt: str, key_file: str, output_path: str):
-    """
-    Encrypt a file using AES encryption in CBC mode.
-    
-    Args:
-        file_to_encrypt: Path to the file to encrypt
-        key_file: Path to the file containing the AES key
-        output_path: Path where the encrypted file will be saved
-        
-    Raises:
-        KeyError: If key file issues occur
-        FileAccessError: If file access issues occur
-        EncryptionError: If encryption process fails
-        ValueError: If arguments are invalid
-    """
-    
-    # Validate input arguments
-    if not all([file_to_encrypt, key_file, output_path]):
-        raise ValueError("All file paths must be provided and non-empty")
-    
-    # Convert to Path objects for better path handling
-    file_to_encrypt_path = Path(file_to_encrypt)
-    key_file_path = Path(key_file)
-    output_path_path = Path(output_path)
-    
-    # Read and validate the AES key
-    try:
-        if not key_file_path.exists():
-            raise KeyError(f"Key file does not exist: {key_file}")
-        
-        if not key_file_path.is_file():
-            raise KeyError(f"Key file path is not a file: {key_file}")
-        
-        with open(key_file_path, 'rb') as kf:
-            aes_key = kf.read()
-            
-        if len(aes_key) == 0:
-            raise KeyError("Key file is empty")
-        elif len(aes_key) != 32:
-            raise KeyError(f"Invalid AES key size: {len(aes_key)} bytes. Expected 32 bytes (256 bits)")
-            
-    except (OSError, IOError) as e:
-        raise KeyError(f"Cannot read key file '{key_file}': {e}")
-    except KeyError:
-        raise
-    except Exception as e:
-        raise KeyError(f"Unexpected error reading key file '{key_file}': {e}")
-    
-    # Read the file to encrypt
-    try:
-        if not file_to_encrypt_path.exists():
-            raise FileAccessError(f"File to encrypt does not exist: {file_to_encrypt}")
-        
-        if not file_to_encrypt_path.is_file():
-            raise FileAccessError(f"Path is not a file: {file_to_encrypt}")
-        
-        file_size = file_to_encrypt_path.stat().st_size
-        if file_size == 0:
-            raise FileAccessError(f"File to encrypt is empty: {file_to_encrypt}")
-        
-        with open(file_to_encrypt_path, 'rb') as f:
-            plaintext = f.read()
-            
-    except (OSError, IOError) as e:
-        raise FileAccessError(f"Cannot read file to encrypt '{file_to_encrypt}': {e}")
-    except FileAccessError:
-        raise
-    except Exception as e:
-        raise FileAccessError(f"Unexpected error reading file to encrypt '{file_to_encrypt}': {e}")
-    
-    # Perform encryption
-    try:
-        # Generate a random IV (Initialization Vector)
-        iv = get_random_bytes(AES.block_size)
-        
-        # Create AES cipher instance
-        cipher = AES.new(aes_key, AES.MODE_CBC, iv)
-        
-        # Pad the plaintext to be a multiple of AES.block_size
-        padded_data = pad(plaintext, AES.block_size)
-        
-        # Encrypt the padded data
-        ciphertext = cipher.encrypt(padded_data)
+        logger.info("Hash computation completed successfully")
+        return True
         
     except Exception as e:
-        raise EncryptionError(f"Encryption process failed: {e}")
-    
-    # Write the encrypted data to output file
-    try:
-        # Ensure output directory exists
-        output_path_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Check if output file already exists and warn
-        if output_path_path.exists():
-            print(f"Warning: Output file already exists and will be overwritten: {output_path}")
-        
-        with open(output_path_path, 'wb') as out_file:
-            out_file.write(iv)  # Prepend the IV to the ciphertext
-            out_file.write(ciphertext)
-            
-        # Verify the file was written correctly
-        if not output_path_path.exists() or output_path_path.stat().st_size == 0:
-            raise FileAccessError("Output file was not created successfully")
-            
-        print(f"File encrypted successfully. Encrypted file saved to: {output_path}")
-        
-    except (OSError, IOError) as e:
-        raise FileAccessError(f"Cannot write encrypted file to '{output_path}': {e}")
-    except FileAccessError:
-        raise
-    except Exception as e:
-        raise FileAccessError(f"Unexpected error writing encrypted file to '{output_path}': {e}")
-
-# FIXME: the generated hash does not match with the server side generated hash (weird becuz there was no salt added, so why diff?)
-def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: str):
-    try:
-        # Read AES key
-        with open(aes_key_path, 'rb') as f:
-            aes_bytes = f.read()
-        # Read Ed25519 private key
-        with open(ed_priv_path, 'rb') as f:
-            ed_priv_bytes = f.read()
-    except FileNotFoundError as e:
-        raise FileNotFoundError(f"Key file not found: {e.filename}")
-    except Exception as e:
-        raise Exception(f"Error reading key files: {e}")
-
-    # Compute SHA-256 hash over combined bytes
-    sha = hashlib.sha256()
-    sha.update(aes_bytes)
-    sha.update(ed_priv_bytes)
-    digest_hex = sha.hexdigest()
-
-    # Save the hexadecimal digest to the output file
-    try:
-        with open(output_hash_path, 'w') as out:
-            out.write(digest_hex)
-    except Exception as e:
-        raise Exception(f"Error writing hash to file '{output_hash_path}': {e}")
-
-    logging.info(f"SHA-256 hash of combined keys written to: {output_hash_path}")
-
-def decode_request_data(request_data):
-    if not request_data:
-        raise ValueError("No data received")
-    try:
-        # 1. Base64 decode
-        decoded_base64 = base64.b64decode(request_data)
-        # 2. UTF-8 decode
-        decoded_utf8 = decoded_base64.decode('utf-8')
-        # 3. JSON load
-        return json.loads(decoded_utf8)
-    except (base64.binascii.Error, json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise ValueError(f"Invalid payload format (Base64/JSON decode error): {e}")
-    except Exception as e:
-        raise ValueError(f"An unexpected error occurred during payload processing: {e}")
-    
-# --- Database Initialization ---
-def init_database(db_name):
-    """Initializes the SQLite database and creates tables if they don't exist."""
-    print("Initializing database...")
-    try:
-        with sqlite3.connect(db_name) as conn:
-            cursor = conn.cursor()
-
-            # Table for heartbeats
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS heartbeats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sensor_id TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    received_at TEXT NOT NULL
-                );
-            """)
-            print("- 'heartbeats' table created or already exists.")
-
-            # Table for captured DNS queries with 'uploaded' column
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS dns_queries (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sensor_id TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    domain TEXT NOT NULL,
-                    resolved_ip TEXT NOT NULL,
-                    status TEXT,
-                    received_at TEXT NOT NULL,
-                    uploaded BOOLEAN DEFAULT FALSE
-                );
-            """)
-            print("- 'dns_queries' table created or already exists.")
-
-            # Add 'uploaded' column to existing table if it doesn't exist
-            cursor.execute("PRAGMA table_info(dns_queries)")
-            columns = [column[1] for column in cursor.fetchall()]
-            if 'uploaded' not in columns:
-                cursor.execute("ALTER TABLE dns_queries ADD COLUMN uploaded BOOLEAN DEFAULT FALSE")
-                print("- Added 'uploaded' column to existing dns_queries table.")
-
-            # Table for general captured UDP packets
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS udp_packets (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sensor_id TEXT NOT NULL,
-                    timestamp TEXT NOT NULL,
-                    src_ip TEXT,
-                    dst_ip TEXT,
-                    src_port INTEGER,
-                    dst_port INTEGER,
-                    payload_base64 TEXT,
-                    received_at TEXT NOT NULL
-                );
-            """)
-            print("- 'udp_packets' table created or already exists.")
-
-            conn.commit()
-        print("Database initialization complete.")
-    except sqlite3.Error as e:
-        print(f"[Database Error] An error occurred during initialization: {e}")
-        # Exit if the database cannot be initialized
-        exit(1)
+        logger.error(f"Unexpected error in compute_key_hash: {e}")
+        return False
 
 # --- Utility Functions ---
-def generate_signature(sensor_id, timestamp, secret):
-    """Generates an HMAC-SHA256 signature for validation."""
-    message = f"{sensor_id}|{timestamp}"
-    return hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
-
-def validate_request(data, secret):
+def sign_zip_encrypt(file_path, private_key_path, aes_key_path, output_file) -> bool:
     """
-    Validates the incoming request by checking its signature.
-    Returns the decoded payload if valid, otherwise returns None.
+    Sign a file with ED25519 private key, zip the file and signature together,
+    then encrypt the zip archive with AES and save to output file.
+    
+    Args:
+        file_path (str): Path to the file to be processed
+        private_key_path (str): Path to the ED25519 private key file
+        aes_key_path (str): Path to the AES key file
+        output_file (str): Path where the encrypted archive will be saved
+    
+    Returns:
+        bool: True if successful, False otherwise
     """
     try:
-        # Decode the base64 payload
-        decoded_payload = base64.b64decode(data)
-        payload = json.loads(decoded_payload)
-
-        # Extract components for signature verification
-        sensor_id = payload.get("sensor_id")
-        timestamp = payload.get("timestamp")
-        client_signature = payload.get("signature")
-
-        if not all([sensor_id, timestamp, client_signature]):
-            print("[Validation Error] Missing required fields in payload.")
-            return None
-
-        # Generate the signature on the server side to compare
-        server_signature = generate_signature(sensor_id, timestamp, secret)
-
-        # Securely compare signatures
-        if hmac.compare_digest(server_signature, client_signature):
-            return payload
-        else:
-            print(f"[Validation Error] Invalid signature for sensor {sensor_id}.")
-            return None
-
-    except (json.JSONDecodeError, base64.binascii.Error) as e:
-        print(f"[Validation Error] Could not decode or parse payload: {e}")
-        return None
+        logger.info(f"Starting sign_zip_encrypt process for file: {file_path}")
+        
+        # Read the payload file
+        logger.info(f"Reading payload file: {file_path}")
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+        
+        # Load the private key
+        logger.info(f"Loading private key from: {private_key_path}")
+        with open(private_key_path, 'rb') as f:
+            private_key_data = f.read()
+        
+        try:
+            private_key = serialization.load_pem_private_key(
+                private_key_data, 
+                password=None
+            )
+            if not isinstance(private_key, Ed25519PrivateKey):
+                raise ValueError("Key is not an ED25519 private key")
+        except Exception as e:
+            logger.error(f"Failed to load private key: {e}")
+            return False
+        
+        # Sign the file
+        logger.info("Signing the file")
+        signature = private_key.sign(file_data)
+        
+        # Create a temporary zip file
+        temp_zip_path = f"{output_file}.temp.zip"
+        logger.info(f"Creating temporary zip file: {temp_zip_path}")
+        
+        with ZipFile(temp_zip_path, 'w', ZIP_DEFLATED) as zipf:
+            # Add the original file
+            zipf.writestr(os.path.basename(file_path), file_data)
+            # Add the signature
+            zipf.writestr(f"{os.path.basename(file_path)}.sig", signature)
+        
+        # Read the zip file
+        with open(temp_zip_path, 'rb') as f:
+            zip_data = f.read()
+        
+        # Load AES key
+        logger.info(f"Loading AES key from: {aes_key_path}")
+        with open(aes_key_path, 'rb') as f:
+            aes_key = f.read()
+        
+        if len(aes_key) not in [16, 24, 32]:  # AES-128, AES-192, or AES-256
+            logger.error(f"Invalid AES key length: {len(aes_key)} bytes")
+            return False
+        
+        # Generate random IV
+        iv = secrets.token_bytes(16)  # AES block size is 16 bytes
+        
+        # Encrypt the zip file
+        logger.info("Encrypting the zip archive")
+        cipher = Cipher(algorithms.AES(aes_key), modes.CBC(iv))
+        encryptor = cipher.encryptor()
+        
+        # Pad the data to be multiple of 16 bytes (PKCS7 padding)
+        padding_length = 16 - (len(zip_data) % 16)
+        padded_data = zip_data + bytes([padding_length] * padding_length)
+        
+        encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+        
+        # Write IV + encrypted data to output file
+        logger.info(f"Writing encrypted archive to: {output_file}")
+        with open(output_file, 'wb') as f:
+            f.write(iv + encrypted_data)
+        
+        # Clean up temporary zip file
+        os.remove(temp_zip_path)
+        
+        logger.info("Sign, zip, and encrypt process completed successfully")
+        return True
+        
     except Exception as e:
-        print(f"[Validation Error] An unexpected error occurred: {e}")
-        return None
+        logger.error(f"Error in sign_zip_encrypt: {e}")
+        # Clean up temporary files if they exist
+        if 'temp_zip_path' in locals() and os.path.exists(temp_zip_path):
+            try:
+                os.remove(temp_zip_path)
+            except:
+                pass
+        return False
 
 def send_udp_data(data, host, port):
     """Send data via UDP."""

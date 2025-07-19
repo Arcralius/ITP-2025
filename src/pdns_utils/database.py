@@ -17,8 +17,72 @@ def get_db_connection(database):
     return conn
 
 
-def init_user_db(database):
-    conn = get_db_connection(database)
+def init_sensor_db(db_name="sens.db"):
+    """Initializes the SQLite database and creates tables if they don't exist."""
+    print("Initializing database...")
+    try:
+        with sqlite3.connect(db_name) as conn:
+            cursor = conn.cursor()
+
+            # Table for heartbeats
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS heartbeats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sensor_id TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    received_at TEXT NOT NULL
+                );
+            """)
+            print("- 'heartbeats' table created or already exists.")
+
+            # Table for captured DNS queries with 'uploaded' column
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS dns_queries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sensor_id TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    resolved_ip TEXT NOT NULL,
+                    status TEXT,
+                    received_at TEXT NOT NULL,
+                    uploaded BOOLEAN DEFAULT FALSE
+                );
+            """)
+            print("- 'dns_queries' table created or already exists.")
+
+            # Add 'uploaded' column to existing table if it doesn't exist
+            cursor.execute("PRAGMA table_info(dns_queries)")
+            columns = [column[1] for column in cursor.fetchall()]
+            if 'uploaded' not in columns:
+                cursor.execute("ALTER TABLE dns_queries ADD COLUMN uploaded BOOLEAN DEFAULT FALSE")
+                print("- Added 'uploaded' column to existing dns_queries table.")
+
+            # Table for general captured UDP packets
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS udp_packets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sensor_id TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    src_ip TEXT,
+                    dst_ip TEXT,
+                    src_port INTEGER,
+                    dst_port INTEGER,
+                    payload_base64 TEXT,
+                    received_at TEXT NOT NULL
+                );
+            """)
+            print("- 'udp_packets' table created or already exists.")
+
+            conn.commit()
+        print("Database initialization complete.")
+    except sqlite3.Error as e:
+        print(f"[Database Error] An error occurred during initialization: {e}")
+        # Exit if the database cannot be initialized
+        exit(1)
+
+
+def init_user_db(db_name="user.db"):
+    conn = get_db_connection(db_name)
     cursor = conn.cursor()
 
     # Create users table if it doesn't exist
@@ -34,7 +98,7 @@ def init_user_db(database):
     # Check if the table is empty, and if so, insert some dummy data
     cursor.execute('SELECT COUNT(*) FROM users')
     if cursor.fetchone()[0] == 0:
-        print("Inserting initial data into the database...")
+        print("Inserting initial data into the db_name...")
         users_data = [
             ("admin", generate_password_hash("P@ssw0rd"), str(uuid.uuid4())), # "Adm1n$ecur3!"
             ("TitanHex", generate_password_hash("T1t4nH3x@2024"), str(uuid.uuid4())),
@@ -123,8 +187,36 @@ def guid_exists(guid_to_check, database):
         return count > 0
     except sqlite3.Error as e:
         print(f"Database error checking GUID: {e}")
-        return False # Or raise the exception, depending on desired error handling
+        return False
     finally:
         if conn:
             conn.close()
-            
+
+
+def get_random_guid_sql(db_name="user.db"):
+    """
+    Query the database for a random existing GUID using SQL's RANDOM() function.
+    This is more efficient for large datasets as it only returns one row.
+    
+    Args:
+        db_name (str): The name of the database file. Defaults to "user.db".
+    
+    Returns:
+        str: A random GUID from the users table, or None if no GUIDs exist.
+    """
+    try:
+        conn = get_db_connection(db_name)
+        cursor = conn.cursor()
+        
+        # Use SQL's RANDOM() function to get one random GUID
+        cursor.execute('SELECT guid FROM users ORDER BY RANDOM() LIMIT 1')
+        result = cursor.fetchone()
+        
+        conn.close()
+        
+        # Return the GUID if found, otherwise None
+        return result[0] if result else None
+        
+    except Exception as e:
+        print(f"Error querying database: {e}")
+        return None
