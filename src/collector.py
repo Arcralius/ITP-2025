@@ -19,11 +19,16 @@ except Exception as e:
 os.makedirs(config.LOG_DIR, exist_ok=True)
 os.makedirs(config.KEY_STORE_DIR, exist_ok=True)
 
+# TODO: add api documentation and data security and validation https://swagger.io/docs/ use this to document apis used
+# TODO: implement login for PDNS data routes (anyone in the user database can access)
+# TODO: make collector and privacy shield dashboards consistent style & features 
+# TODO: format logging (red for error, yellow for warning, green for info)
+
+# --- Display PDNS data ---
 @app.route('/')
 def dashboard():
     return render_template('co_dashboard.html')
 
-# API route for PDNS data
 @app.route('/api/pdns-data')
 def get_pdns_data():
     try:
@@ -58,7 +63,6 @@ def get_pdns_data():
         print(f"Error in PDNS API: {e}")
         return jsonify({'data': [], 'error': str(e)})
 
-# API route for upload batches data
 @app.route('/api/upload-batches')
 def get_upload_batches():
     try:
@@ -91,7 +95,6 @@ def get_upload_batches():
         print(f"Error in Batches API: {e}")
         return jsonify({'data': [], 'error': str(e)})
 
-# API route for heartbeat data
 @app.route('/api/heartbeats')
 def get_heartbeats():
     heartbeats = []
@@ -172,6 +175,7 @@ def debug():
     
     return jsonify(debug_info)
 
+# --- Handle Privacy Shield ---
 @scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
 def daily_task():
     try:
@@ -428,8 +432,7 @@ class UDPDNSReceiver:
             logging.error(f"Unexpected error processing data from {client_address}: {e}")
             logging.exception(f"Unexpected error in process_received_data: {e}")
 
-# TODO: add api documentation and data security and validation
-# https://swagger.io/docs/ use this to document apis used
+# --- Manage Users routes ---
 def admin_required(f):
     """Decorator to require admin authentication for routes"""
     @wraps(f)
@@ -502,6 +505,11 @@ def admin_logout():
     session.pop('admin_username', None)
     flash('You have been logged out successfully.', 'success')
     return redirect(url_for('admin_login'))
+
+@app.route('/admin/', methods=['GET'])
+@admin_required
+def admin_redirect():
+    return redirect(url_for('userdata'))
 
 @app.route('/admin/users', methods=['GET'])
 @admin_required
@@ -620,10 +628,10 @@ def delete_user(user_id):
     finally:
         conn.close()
 
-def upd_listener_loop():
+def udp_listener_loop():
     server = UDPDNSReceiver(
         host='0.0.0.0',
-        port=9999,
+        port= config.UDP_DNS_PORT,
         max_packet_size=65507
     )
     
@@ -643,8 +651,8 @@ if __name__ == '__main__':
     db.init_user_db(config.USER_DATABASE)
     db.init_pdns_db(config.PDNS_DATABASE)
 
-    heartbeat_thread = threading.Thread(target=upd_listener_loop, daemon=True)
-    heartbeat_thread.start()
+    udp_listener = threading.Thread(target=udp_listener_loop, daemon=True)
+    udp_listener.start()
 
     app.secret_key = os.urandom(24)  
     app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)

@@ -28,14 +28,11 @@ if %errorlevel% neq 0 (
     goto :eof
 )
 
-REM --- Step 5: Run the privacy shield script ---
-echo [INFO] Running the privacy shield script...
-start "PrivacyShield" python privacyshield.py
+REM --- Step 5: Read the first line from the store file and run the Privacy Shield and HTTPs sensor ---
+echo [INFO] Reading first line of data from the store file...
 
-REM --- Step 6: Read file contents and run the HTTP sensor ---
-echo [INFO] Reading data from the store file to send to the sensor...
 set "FILE_TO_READ="
-for %%F in (.\\store\\*.txt) do (
+for %%F in (.\store\*.txt) do (
     set "FILE_TO_READ=%%F"
     goto :found_file
 )
@@ -46,30 +43,29 @@ if not defined FILE_TO_READ (
     goto :eof
 )
 
-REM Read the entire content of the file into a variable.
 setlocal enabledelayedexpansion
 set "file_contents="
 for /f "usebackq delims=" %%a in ("%FILE_TO_READ%") do (
-    set "file_contents=!file_contents! %%a"
+    set "file_contents=%%a"
+    goto :got_line
 )
-endlocal & set "file_contents=%file_contents:~1%"
+
+:got_line
+endlocal & set "file_contents=%file_contents:~0,4096%"
+
+REM Remove leading/trailing whitespace (basic method)
+for /f "tokens=* delims= " %%a in ("%file_contents%") do set "file_contents=%%a"
 
 if not defined file_contents (
-    echo [ERROR] The file at '%FILE_TO_READ%' appears to be empty.
+    echo [ERROR] The first line in '%FILE_TO_READ%' appears to be empty.
     goto :eof
 )
 
-echo [INFO] Running the HTTP sensor with the collected data...
-python https_sensor.py 2919e39a-fbc9-43f3-ba64-0cea356e3850 "%file_contents%"
+echo [INFO] Running the Privacy Shield and HTTPs sensor with the collected data...
+start "PrivacyShield" python privacyshield.py "%file_contents%"
+start "https dns sensor" python https_sensor.py 2919e39a-fbc9-43f3-ba64-0cea356e3850 "%file_contents%"
 
-REM --- Step 7: Terminate background processes ---
-echo [INFO] Cleaning up background processes...
-taskkill /F /FI "WINDOWTITLE eq Collector" > nul 2>&1
-taskkill /F /FI "WINDOWTITLE eq PrivacyShield" > nul 2>&1
-echo [INFO] Cleanup complete.
+REM --- Step 6: Done ---
 
 echo [SUCCESS] Script finished successfully.
 
-:eof
-REM Use 'pause' if you want the window to stay open after the script finishes.
-REM pause

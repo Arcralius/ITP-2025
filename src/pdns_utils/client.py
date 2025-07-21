@@ -1,11 +1,10 @@
-import hashlib, logging, hmac, os, json, base64, socket, re, logging
+import hashlib, logging, hmac, os, json, base64, socket, re, logging, random
 from datetime import datetime, timezone
 from zipfile import ZipFile, BadZipFile, ZIP_DEFLATED
-import requests, config
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+import requests, tempfile
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.exceptions import InvalidSignature
 import secrets
 from pathlib import Path
 
@@ -152,35 +151,39 @@ def update_date_to_today(file_path):
         new_file_path = os.path.join(dir_name, new_filename)
         return new_file_path
 
-# --- key sig download + pwd gen --- 
+# --- Download functions --- 
 def download_sig_and_key(download_url: str, password: str, output_dir: str, verify_ssl: bool = True):
+    temp_zip_path = None
     try:
         # Prepare the POST data
         data = {'password': password}
-
         # Send the POST request
         response = requests.post(download_url, json=data, stream=True, verify=verify_ssl)
         response.raise_for_status()  # Raise an error for bad status codes
-
+        
         # Ensure the output directory exists
         os.makedirs(output_dir, exist_ok=True)
-
-        # Define the path for the downloaded ZIP file
-        zip_path = os.path.join(output_dir, config.ZIP_NAME)
-
-        # Write the response content to the ZIP file
-        with open(zip_path, 'wb') as f:
+        
+        # Create a temporary file for the ZIP
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as temp_file:
+            temp_zip_path = temp_file.name
+            # Write the response content to the temporary ZIP file
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
-                    f.write(chunk)
-
-        print(f"ZIP file downloaded and saved to: {zip_path}")
-
+                    temp_file.write(chunk)
+        
+        print(f"ZIP file downloaded to temporary location: {temp_zip_path}")
+        
         # Extract the ZIP file
-        with ZipFile(zip_path, 'r') as zip_ref:
+        with ZipFile(temp_zip_path, 'r') as zip_ref:
             zip_ref.extractall(output_dir)
             print(f"Files extracted to: {output_dir}")
-
+        
+        # Delete the temporary ZIP file after successful extraction
+        os.unlink(temp_zip_path)
+        print(f"Temporary ZIP file deleted: {temp_zip_path}")
+        temp_zip_path = None  # Reset to None to avoid deletion in except block
+        
     except requests.exceptions.SSLError as ssl_err:
         print(f"SSL error occurred: {ssl_err}")
     except requests.exceptions.HTTPError as http_err:
@@ -191,7 +194,14 @@ def download_sig_and_key(download_url: str, password: str, output_dir: str, veri
         print(f"Error extracting ZIP file: {zip_err}")
     except Exception as err:
         print(f"An unexpected error occurred: {err}")
-
+    finally:
+        # Clean up temporary file if it still exists (in case of errors)
+        if temp_zip_path and os.path.exists(temp_zip_path):
+            try:
+                os.unlink(temp_zip_path)
+                print(f"Cleaned up temporary ZIP file: {temp_zip_path}")
+            except OSError:
+                print(f"Could not delete temporary file: {temp_zip_path}")
     """Raised when ZIP packaging fails."""
     pass
 
@@ -294,7 +304,7 @@ def generate_password(aes_key_path: str, ed_priv_path: str, output_hash_path: st
         logger.error(f"Unexpected error in compute_key_hash: {e}")
         return False
 
-# --- Utility Functions ---
+# --- Upload functions ---
 def sign_zip_encrypt(file_path, private_key_path, aes_key_path, output_file) -> bool:
     """
     Sign a file with ED25519 private key, zip the file and signature together,
@@ -400,8 +410,23 @@ def send_udp_data(data, host, port):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
    
     try:
-        logging.info(f"Sending UDP data to {host}:{port}")
+        source_port = random.randint(32768, 65535)
+        source_ip = "24.42.69.222"
+        """
+        24: From the classic SpongeBob SquarePants joke, "What's funnier than 24? ... 25!"
+
+        42: In Douglas Adams' The Hitchhiker's Guide to the Galaxy, this is the "Answer to the Ultimate Question of Life, the Universe, and Everything."
+
+        69: A number widely known for its juvenile and cheeky connotations.
+
+        222: Numbers with repeating digits are often seen as silly or amusing due to their simple, rhythmic pattern.
+        """
+
+        logging.info(f"Sending UDP data to {host}:{port} using source {source_ip}:{source_port}")
+
+        sock.bind((source_ip, source_port))
         sock.sendto(data, (host, port))
+
         logging.info(f"Successfully sent {len(data)} bytes to {host}:{port}")
         return True
        
@@ -411,3 +436,11 @@ def send_udp_data(data, host, port):
        
     finally:
         sock.close()
+
+# --- Serve Sensor utility functions ---
+def get_pwd(path_to_pwd_file):
+    try:
+        with open(path_to_pwd_file, 'r', encoding='utf-8') as f:
+            return f.readline().strip()
+    except Exception as e:
+        print(f"Error reading password file: {e}")

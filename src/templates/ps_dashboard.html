@@ -57,6 +57,10 @@
             margin: 0;
             color: #2c3e50;
         }
+        .header-buttons {
+            display: flex;
+            gap: 10px; 
+        }
         #refreshButton {
             padding: 10px 15px;
             font-size: 16px;
@@ -69,6 +73,19 @@
         }
         #refreshButton:hover {
             background-color: #2980b9;
+        }
+        #logoutButton {
+            padding: 10px 15px;
+            font-size: 16px;
+            color: #fff;
+            background-color: #e74c3c; 
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        #logoutButton:hover {
+            background-color: #c0392b; 
         }
         
         /* Stats Dashboard */
@@ -242,7 +259,10 @@
             <div class="health-status" id="healthStatus">Checking...</div>
             <div class="last-update" id="lastUpdate">Loading...</div>
         </div>
-        <button id="refreshButton" onclick="refreshActiveTable()">Refresh</button>
+        <div class="header-buttons">
+            <button id="logoutButton" data-logout-url="{{ url_for('logout') }}" onclick="confirmLogout(this)">Logout</button>
+            <button id="refreshButton" onclick="refreshActiveTable()">Refresh</button>
+        </div>
     </div>
 
     <!-- Stats Dashboard -->
@@ -696,6 +716,13 @@
                     initializedTables[activeTableId].ajax.reload(null, false);
                 }
             }
+        }
+    }
+
+    function confirmLogout(button) {
+        const logoutUrl = button.getAttribute('data-logout-url');
+        if (confirm('Are you sure you want to log out?')) {
+            window.location.href = logoutUrl;
         }
     }
 

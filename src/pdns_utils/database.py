@@ -1,8 +1,4 @@
-import sqlite3
-import hashlib
-import uuid 
-import os
-import logging
+import sqlite3, hashlib, uuid, os, logging
 
 
 def generate_password_hash(password: str) -> bytes:

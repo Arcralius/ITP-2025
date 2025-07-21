@@ -1,77 +1,65 @@
 # Standard library imports
-import hmac, os, sqlite3, tempfile, time, logging, json, threading, traceback
+import hmac, os, sqlite3, tempfile, time, logging, json, threading, traceback, secrets, sys
 from datetime import UTC, datetime
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, session, flash, redirect, url_for
 from flask_apscheduler import APScheduler
 from pdns_utils import client, database as db
 from pathlib import Path
+from functools import wraps
 
 
 # --- Server Configuration ---
 app = Flask(__name__)
-class PATH_TO:
-    outp_dir = ".//client_download//"
-    key_file = client.append_today_date_if_missing(".//client_download//aes.key")
-    sig_file = client.append_today_date_if_missing(".//client_download//ed25519_private.pem")
-    pwd_file = client.append_today_date_if_missing(".//client_download//pwd.txt")
-    zip_file = client.append_today_date_if_missing(".//client_download//archive.zip")
-    database = "sensors.db"
-    down_url = "http://localhost:5000/download"
-    htbt_url = "http://localhost:5000/heartbeat"
 
-class UDP_CONF:
+class PATH_TO:
+    outp_dir = ".//client_download"
+    key_file = client.append_today_date_if_missing(f"{outp_dir}//aes.key")
+    sig_file = client.append_today_date_if_missing(f"{outp_dir}//ed25519_private.pem")
+    pwd_file = client.append_today_date_if_missing(f"{outp_dir}//pwd.txt")
+    zip_file = client.append_today_date_if_missing(f"{outp_dir}//archive.zip")
+
+class PS_CONF:
+    # --- Login config --- 
+    username = "admin"
+    password = "P@ssw0rd"
+
+    # --- Database config ---
+    database = "sensors.db"
+
+    # --- Remote endpoint config ---
+    verify_ssl = False
+    collector_url = "localhost:5000"
+
+    # --- Download config ---
+    download_delay = 5
+    down_url = f"http://{collector_url}/download"
+
+    # --- Heartbeat config ---
+    heartbeat_delay = 5
+    htbt_url = f"http://{collector_url}/heartbeat"
+
+    # --- Upload config ---
+    upload_delay = 30
     udp_port = 9999
-    udp_serv = "localhost"
+    udp_serv = "localhost"  # change to remote IP address
 
 HEARTBEAT_GUID = db.get_random_guid_sql()
-HEARTBEAT_TIMER = 5
-DOWNLOAD_TIMER = 5
-UPLOAD_TIMER = 20
-VERIFY_SSL= False
 path_to = PATH_TO()
-udp_conf = UDP_CONF()
+ps_conf = PS_CONF()
 scheduler = APScheduler()
+app.secret_key = secrets.token_hex(32)  
 
-# --- Flask Routes ---
-@app.route('/', methods=['GET'])
-def dashboard():
-    """Renders the main dashboard, displaying data from all tables."""
-    try:
-        with sqlite3.connect(path_to.database) as conn:
-            conn.row_factory = sqlite3.Row # This allows accessing columns by name
-            cursor = conn.cursor()
-
-            # Fetch all data from each table
-            cursor.execute("SELECT * FROM heartbeats ORDER BY received_at DESC")
-            heartbeats = cursor.fetchall()
-
-            cursor.execute("SELECT * FROM dns_queries ORDER BY received_at DESC")
-            dns_queries = cursor.fetchall()
-
-            cursor.execute("SELECT * FROM udp_packets ORDER BY received_at DESC")
-            udp_packets = cursor.fetchall()
-
-        # Render the HTML template with the fetched data
-        return render_template('ps_dashboard.html', heartbeats=heartbeats, dns_queries=dns_queries, udp_packets=udp_packets)
-    except sqlite3.Error as e:
-        print(f"[Dashboard Error] Could not fetch data for dashboard: {e}")
-        return "<h1>Error</h1><p>Could not connect to the database to fetch data.</p>", 500
-
+# --- Sensor Routes ---
 @app.route('/heartbeat', methods=['POST'])
 def handle_heartbeat():
     """Receives, validates, and stores heartbeat signals."""
-    try:
-        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-            pwd = f.readline().strip()
-    except Exception as e:
-        print(f"Error reading password file: {e}")
-
+    pwd = client.get_pwd(path_to.pwd_file)
     payload = client.validate_request(request.data, pwd)
     if not payload:
         return jsonify({"status": "error", "message": "Invalid request"}), 403
 
     try:
-        with sqlite3.connect(path_to.database) as conn:
+        with sqlite3.connect(ps_conf.database) as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO heartbeats (sensor_id, timestamp, received_at) VALUES (?, ?, ?)",
@@ -87,11 +75,7 @@ def handle_heartbeat():
 @app.route('/dns_data', methods=['POST'])
 def handle_dns_data():
     """Receives, validates, and stores captured DNS query data."""
-    try:
-        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-            pwd = f.readline().strip()
-    except Exception as e:
-        print(f"Error reading password file: {e}")
+    pwd = client.get_pwd(path_to.pwd_file)
     payload = client.validate_request(request.data, pwd)
     if not payload:
         return jsonify({"status": "error", "message": "Invalid request"}), 403
@@ -101,7 +85,7 @@ def handle_dns_data():
         return jsonify({"status": "warn", "message": "No DNS queries in payload"}), 400
 
     try:
-        with sqlite3.connect(path_to.database) as conn:
+        with sqlite3.connect(ps_conf.database) as conn:
             cursor = conn.cursor()
             received_at = datetime.now(UTC).isoformat()
             for query in dns_queries:
@@ -130,11 +114,7 @@ def handle_dns_data():
 @app.route('/captured_udp_packets', methods=['POST'])
 def handle_captured_udp():
     """Receives, validates, and stores general UDP packet information."""
-    try:
-        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-            pwd = f.readline().strip()
-    except Exception as e:
-        print(f"Error reading password file: {e}")
+    pwd = client.get_pwd(path_to.pwd_file)
     payload = client.validate_request(request.data, pwd)
     if not payload:
         return jsonify({"status": "error", "message": "Invalid request"}), 403
@@ -144,7 +124,7 @@ def handle_captured_udp():
         return jsonify({"status": "warn", "message": "No packet info in payload"}), 400
 
     try:
-        with sqlite3.connect(path_to.database) as conn:
+        with sqlite3.connect(ps_conf.database) as conn:
             cursor = conn.cursor()
             received_at = datetime.now(UTC).isoformat()
             for packet in packet_info_list:
@@ -184,12 +164,7 @@ def get_secret():
         return jsonify({"status": "error", "message": "Missing authentication headers"}), 400
 
     # Validate the signature using the current secret
-    try:
-        with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-            pwd = f.readline().strip()
-    except Exception as e:
-        print(f"Error reading password file: {e}")
-
+    pwd = client.get_pwd(path_to.pwd_file)
     server_signature = client.generate_signature(sensor_id, timestamp, pwd)
     if hmac.compare_digest(server_signature, client_signature):
         logging.info(f"[Secret Route] Validated request from {sensor_id}. Serving secret.")
@@ -198,11 +173,74 @@ def get_secret():
         logging.error(f"[Secret Route Error] Invalid signature from {sensor_id}.")
         return jsonify({"status": "error", "message": "Invalid signature"}), 403
 
+# --- User Routes ---
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'logged_in' not in session or not session['logged_in']:
+            if request.is_json or request.path.startswith('/api/'):
+                return jsonify({'error': 'Authentication required', 'redirect': '/login'}), 401
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """Handle login page and authentication"""
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if username == ps_conf.username and password == ps_conf.password:
+            session['logged_in'] = True
+            session['username'] = username
+            session['login_time'] = datetime.now().isoformat()
+            flash('Login successful!', 'success')
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Invalid username or password. Please try again.', 'error')
+    
+    return render_template('privacy_shield_login.html')
+
+@app.route('/logout')
+def logout():
+    """Handle user logout"""
+    session.clear()
+    flash('You have been logged out successfully.', 'success')
+    return redirect(url_for('login'))
+
+@app.route('/', methods=['GET'])
+@login_required
+def dashboard():
+    """Renders the main dashboard, displaying data from all tables."""
+    try:
+        with sqlite3.connect(ps_conf.database) as conn:
+            conn.row_factory = sqlite3.Row # This allows accessing columns by name
+            cursor = conn.cursor()
+
+            # Fetch all data from each table
+            cursor.execute("SELECT * FROM heartbeats ORDER BY received_at DESC")
+            heartbeats = cursor.fetchall()
+
+            cursor.execute("SELECT * FROM dns_queries ORDER BY received_at DESC")
+            dns_queries = cursor.fetchall()
+
+            cursor.execute("SELECT * FROM udp_packets ORDER BY received_at DESC")
+            udp_packets = cursor.fetchall()
+
+        # Render the HTML template with the fetched data
+        return render_template('ps_dashboard.html', heartbeats=heartbeats, dns_queries=dns_queries, udp_packets=udp_packets)
+    except sqlite3.Error as e:
+        print(f"[Dashboard Error] Could not fetch data for dashboard: {e}")
+        return "<h1>Error</h1><p>Could not connect to the database to fetch data.</p>", 500
+
+# --- API Routes ---
 @app.route('/api/heartbeats', methods=['GET'])
+@login_required
 def get_heartbeats():
     """API endpoint to get heartbeat data"""
     try:
-        conn = db.get_db_connection(path_to.database)
+        conn = db.get_db_connection(ps_conf.database)
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
@@ -233,10 +271,11 @@ def get_heartbeats():
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/api/dns-queries', methods=['GET'])
+@login_required
 def get_dns_queries():
     """API endpoint to get DNS query data"""
     try:
-        conn = db.get_db_connection(path_to.database)
+        conn = db.get_db_connection(ps_conf.database)
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
@@ -270,10 +309,11 @@ def get_dns_queries():
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/api/udp-packets', methods=['GET'])
+@login_required
 def get_udp_packets():
     """API endpoint to get UDP packet data"""
     try:
-        conn = db.get_db_connection(path_to.database)
+        conn = db.get_db_connection(ps_conf.database)
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
@@ -309,10 +349,11 @@ def get_udp_packets():
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/api/stats', methods=['GET'])
+@login_required
 def get_stats():
     """API endpoint to get database statistics"""
     try:
-        conn = db.get_db_connection(path_to.database)
+        conn = db.get_db_connection(ps_conf.database)
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
@@ -356,10 +397,11 @@ def get_stats():
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/api/sensors', methods=['GET'])
+@login_required
 def get_active_sensors():
     """API endpoint to get list of active sensors"""
     try:
-        conn = db.get_db_connection(path_to.database)
+        conn = db.get_db_connection(ps_conf.database)
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
@@ -390,12 +432,12 @@ def get_active_sensors():
         logging.error(traceback.format_exc())
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
-# Health check endpoint
 @app.route('/api/health', methods=['GET'])
+@login_required
 def health_check():
     """Simple health check endpoint"""
     try:
-        conn = db.get_db_connection(path_to.database)
+        conn = db.get_db_connection(ps_conf.database)
         if not conn:
             return jsonify({'status': 'unhealthy', 'error': 'Database connection failed'}), 500
         
@@ -418,7 +460,7 @@ def health_check():
             'timestamp': datetime.now().isoformat()
         }), 500
 
-# Error handlers
+# --- Handlers ---
 @app.errorhandler(404)
 def not_found(error):
     return jsonify({'error': 'Endpoint not found'}), 404
@@ -427,7 +469,6 @@ def not_found(error):
 def internal_error(error):
     return jsonify({'error': 'Internal server error'}), 500
 
-# CORS support for development
 @app.after_request
 def after_request(response):
     response.headers.add('Access-Control-Allow-Origin', '*')
@@ -435,22 +476,22 @@ def after_request(response):
     response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE')
     return response
 
+# --- Connection to collector ---
 def heartbeat_loop():
     with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
         password = f.readline().strip()
     while True:
-        client.send_heartbeat(HEARTBEAT_GUID, password, path_to.htbt_url)
+        client.send_heartbeat(HEARTBEAT_GUID, password, ps_conf.htbt_url)
         print("heartbeat sent to collector")
-        time.sleep(HEARTBEAT_TIMER)
+        time.sleep(ps_conf.heartbeat_delay)
 
 def download_loop():
     while True:
-        time.sleep(DOWNLOAD_TIMER)
+        time.sleep(ps_conf.download_delay)
         try:
             try:
-                with open(path_to.pwd_file, 'r', encoding='utf-8') as f:
-                    pwd = f.read().strip()
-                    client.download_sig_and_key(path_to.down_url, pwd, path_to.outp_dir, VERIFY_SSL)
+                pwd = client.get_pwd(path_to.pwd_file)
+                client.download_sig_and_key(ps_conf.down_url, pwd, path_to.outp_dir, ps_conf.verify_ssl)
                 client.generate_password(path_to.key_file, path_to.sig_file, path_to.pwd_file)
             except Exception as e:
                 logging.error(f"Error reading password file: {e}")
@@ -465,12 +506,12 @@ def download_loop():
 
 def upload_loop():
     while True:
-        time.sleep(UPLOAD_TIMER)
+        time.sleep(ps_conf.upload_delay)
         try:
             # Connect to database and retrieve unuploaded DNS queries
-            logging.info(f"Connecting to database: {path_to.database}")
+            logging.info(f"Connecting to database: {ps_conf.database}")
             
-            with sqlite3.connect(path_to.database) as conn:
+            with sqlite3.connect(ps_conf.database) as conn:
                 cursor = conn.cursor()
                 
                 # Retrieve all rows where uploaded is False
@@ -529,7 +570,7 @@ def upload_loop():
                     encrypted_data = f.read()
                 
                 # Send via UDP
-                success = client.send_udp_data(encrypted_data, udp_conf.udp_serv, udp_conf.udp_port)
+                success = client.send_udp_data(encrypted_data, ps_conf.udp_serv, ps_conf.udp_port)
                 
                 if success:
                     if record_count > 0:
@@ -568,7 +609,35 @@ def upload_loop():
             logging.exception(f"Exception in upload_pdns_data: {e}")
 
 if __name__ == "__main__":
-    db.init_sensor_db(path_to.database)
+    db.init_sensor_db(ps_conf.database)
+
+    """
+    Asks user to provide password for the day,
+    Writes password into today's password file,
+    TODO: check password by sending heartbeat
+            -> check response status, not return 200 means fail
+            -> fail then delete pwd file & stop execution
+    TODO: possible future feature additions
+            -> edit config from cmdline
+            -> edit config from web console
+    """
+
+    if len(sys.argv) < 2:
+        print(f"Usage: python {sys.argv[0]} \"today's password\"")
+        sys.exit(1)
+    
+    input_string = sys.argv[1]
+
+    path_to.pwd_file = Path(client.update_date_to_today(path_to.pwd_file))
+    try:
+        with open(path_to.pwd_file, 'w') as file:
+            file.write(input_string)
+        print(f"Successfully stored password into '{path_to.pwd_file}'")
+
+    except IOError as e:
+        # Handle potential file system errors (e.g., permission denied).
+        print(f"Error writing to file: {e}")
+        sys.exit(1)
     
     # Start background threads
     heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
