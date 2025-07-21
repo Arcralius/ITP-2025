@@ -1,5 +1,5 @@
 # Standard library imports
-import hmac, os, sqlite3, tempfile, time, logging, json, threading
+import hmac, os, sqlite3, tempfile, time, logging, json, threading, traceback
 from datetime import UTC, datetime
 from flask import Flask, jsonify, render_template, request
 from flask_apscheduler import APScheduler
@@ -197,6 +197,243 @@ def get_secret():
     else:
         logging.error(f"[Secret Route Error] Invalid signature from {sensor_id}.")
         return jsonify({"status": "error", "message": "Invalid signature"}), 403
+
+@app.route('/api/heartbeats', methods=['GET'])
+def get_heartbeats():
+    """API endpoint to get heartbeat data"""
+    try:
+        conn = db.get_db_connection(path_to.database)
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, sensor_id, timestamp, received_at 
+            FROM heartbeats 
+            ORDER BY received_at DESC 
+            LIMIT 1000
+        """)
+        
+        heartbeats = []
+        for row in cursor.fetchall():
+            heartbeats.append({
+                'id': row['id'],
+                'sensor_id': row['sensor_id'],
+                'timestamp': row['timestamp'],
+                'received_at': row['received_at']
+            })
+        
+        conn.close()
+        logging.info(f"Retrieved {len(heartbeats)} heartbeat records")
+        return jsonify({'data': heartbeats})
+        
+    except Exception as e:
+        logging.error(f"Error in get_heartbeats: {e}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+@app.route('/api/dns-queries', methods=['GET'])
+def get_dns_queries():
+    """API endpoint to get DNS query data"""
+    try:
+        conn = db.get_db_connection(path_to.database)
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, sensor_id, timestamp, domain, resolved_ip, status, received_at 
+            FROM dns_queries 
+            ORDER BY received_at DESC 
+            LIMIT 1000
+        """)
+        
+        dns_queries = []
+        for row in cursor.fetchall():
+            dns_queries.append({
+                'id': row['id'],
+                'sensor_id': row['sensor_id'],
+                'timestamp': row['timestamp'],
+                'domain': row['domain'],
+                'resolved_ip': row['resolved_ip'],
+                'status': row['status'],
+                'received_at': row['received_at']
+            })
+        
+        conn.close()
+        logging.info(f"Retrieved {len(dns_queries)} DNS query records")
+        return jsonify({'data': dns_queries})
+        
+    except Exception as e:
+        logging.error(f"Error in get_dns_queries: {e}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+@app.route('/api/udp-packets', methods=['GET'])
+def get_udp_packets():
+    """API endpoint to get UDP packet data"""
+    try:
+        conn = db.get_db_connection(path_to.database)
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, sensor_id, timestamp, src_ip, dst_ip, src_port, dst_port, payload_base64, received_at 
+            FROM udp_packets 
+            ORDER BY received_at DESC 
+            LIMIT 1000
+        """)
+        
+        udp_packets = []
+        for row in cursor.fetchall():
+            udp_packets.append({
+                'id': row['id'],
+                'sensor_id': row['sensor_id'],
+                'timestamp': row['timestamp'],
+                'src_ip': row['src_ip'],
+                'dst_ip': row['dst_ip'],
+                'src_port': row['src_port'],
+                'dst_port': row['dst_port'],
+                'payload_base64': row['payload_base64'],
+                'received_at': row['received_at']
+            })
+        
+        conn.close()
+        logging.info(f"Retrieved {len(udp_packets)} UDP packet records")
+        return jsonify({'data': udp_packets}) 
+        
+    except Exception as e:
+        logging.error(f"Error in get_udp_packets: {e}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+@app.route('/api/stats', methods=['GET'])
+def get_stats():
+    """API endpoint to get database statistics"""
+    try:
+        conn = db.get_db_connection(path_to.database)
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Get counts for each table
+        stats = {}
+        
+        # Heartbeats count
+        cursor.execute("SELECT COUNT(*) as count FROM heartbeats")
+        stats['heartbeats_count'] = cursor.fetchone()['count']
+        
+        # DNS queries count
+        cursor.execute("SELECT COUNT(*) as count FROM dns_queries")
+        stats['dns_queries_count'] = cursor.fetchone()['count']
+        
+        # UDP packets count
+        cursor.execute("SELECT COUNT(*) as count FROM udp_packets")
+        stats['udp_packets_count'] = cursor.fetchone()['count']
+        
+        # Latest records timestamps
+        cursor.execute("SELECT MAX(received_at) as latest FROM heartbeats")
+        result = cursor.fetchone()
+        stats['latest_heartbeat'] = result['latest'] if result['latest'] else 'No data'
+        
+        cursor.execute("SELECT MAX(received_at) as latest FROM dns_queries")
+        result = cursor.fetchone()
+        stats['latest_dns_query'] = result['latest'] if result['latest'] else 'No data'
+        
+        cursor.execute("SELECT MAX(received_at) as latest FROM udp_packets")
+        result = cursor.fetchone()
+        stats['latest_udp_packet'] = result['latest'] if result['latest'] else 'No data'
+        
+        conn.close()
+        logging.info("Retrieved database statistics")
+        return jsonify({'data': stats})
+        
+    except Exception as e:
+        logging.error(f"Error in get_stats: {e}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+@app.route('/api/sensors', methods=['GET'])
+def get_active_sensors():
+    """API endpoint to get list of active sensors"""
+    try:
+        conn = db.get_db_connection(path_to.database)
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Get unique sensor IDs from heartbeats with their latest activity
+        cursor.execute("""
+            SELECT sensor_id, MAX(received_at) as last_seen, COUNT(*) as heartbeat_count
+            FROM heartbeats 
+            GROUP BY sensor_id 
+            ORDER BY last_seen DESC
+        """)
+        
+        sensors = []
+        for row in cursor.fetchall():
+            sensors.append({
+                'sensor_id': row['sensor_id'],
+                'last_seen': row['last_seen'],
+                'heartbeat_count': row['heartbeat_count']
+            })
+        
+        conn.close()
+        logging.info(f"Retrieved {len(sensors)} sensor records")
+        return jsonify({'data': sensors})
+        
+    except Exception as e:
+        logging.error(f"Error in get_active_sensors: {e}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
+
+# Health check endpoint
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Simple health check endpoint"""
+    try:
+        conn = db.get_db_connection(path_to.database)
+        if not conn:
+            return jsonify({'status': 'unhealthy', 'error': 'Database connection failed'}), 500
+        
+        # Test database connection
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        conn.close()
+        
+        return jsonify({
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'database': 'connected'
+        })
+    except Exception as e:
+        logging.error(f"Health check failed: {e}")
+        return jsonify({
+            'status': 'unhealthy', 
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Endpoint not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error'}), 500
+
+# CORS support for development
+@app.after_request
+def after_request(response):
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+    response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE')
+    return response
 
 def heartbeat_loop():
     with open(path_to.pwd_file, 'r', encoding='utf-8') as f:

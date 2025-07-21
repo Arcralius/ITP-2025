@@ -1,4 +1,4 @@
-import hashlib, logging, hmac, os, json, base64, tempfile, socket, re, logging
+import hashlib, logging, hmac, os, json, base64, socket, re, logging
 from datetime import datetime, timezone
 from zipfile import ZipFile, BadZipFile, ZIP_DEFLATED
 import requests, config
@@ -15,6 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# --- Heartbeat functions ---
 def send_heartbeat(sensor_id, secret, heartbeat_url):
     timestamp = datetime.now(timezone.utc).isoformat()
     message = f"{sensor_id}|{timestamp}"

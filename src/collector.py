@@ -15,11 +15,10 @@ try:
 except Exception as e:
     raise Exception(f"Error with the scheduler: {e}")
 
-# --- Initialize Application (e.g., create directories) ---
+# --- Initialize Application ---
 os.makedirs(config.LOG_DIR, exist_ok=True)
 os.makedirs(config.KEY_STORE_DIR, exist_ok=True)
 
-# FIXME: pdns data tables not showing any data, linked to not being able to download data properly
 @app.route('/')
 def dashboard():
     return render_template('co_dashboard.html')
@@ -91,6 +90,7 @@ def get_upload_batches():
     except Exception as e:
         print(f"Error in Batches API: {e}")
         return jsonify({'data': [], 'error': str(e)})
+
 # API route for heartbeat data
 @app.route('/api/heartbeats')
 def get_heartbeats():
@@ -201,7 +201,6 @@ def serve_KeySig():
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
-# FIXME: log file generating in ./ instead of ./logs/
 @app.route("/heartbeat", methods=["POST"])
 def heartbeat():
     """Receives and validates sensor heartbeat signals, logging them to file."""
@@ -224,7 +223,7 @@ def heartbeat():
         return jsonify({"error": "Invalid signature"}), 401
 
     # Log heartbeat to file
-    with open(config.HEARTBEAT_LOG_FILE, 'a', encoding='utf-8') as f:
+    with open(config.HEARTBEAT_LOG_PATH, 'a', encoding='utf-8') as f:
         log_entry = {
             'sensor_id': sensor_id,
             'timestamp': timestamp,
@@ -235,7 +234,6 @@ def heartbeat():
     print(f"Heartbeat from {sensor_id} received and validated, logged to file.")
     return jsonify({"status": "alive"}), 200
 
-# FIXME: not recieving/parsing pdns data properly 
 class UDPDNSReceiver:
     def __init__(self, host='0.0.0.0', port=9999, max_packet_size=65507):
         self.host = host
@@ -289,13 +287,36 @@ class UDPDNSReceiver:
                 with open(encrypted_file_path, 'wb') as f:
                     f.write(encrypted_data)
                 
-                # Decrypt the data using your existing decrypt function
-                decrypted_file_path = os.path.join(temp_dir, "decrypted_data")
-                if not server.decrypt_unzip_verify(encrypted_file_path, config.ED_PUB_PATH, config.AES_KEY_PATH, decrypted_file_path):
-                    logging.error(f"Decryption failed for data from {client_address}")
+                # Create output directory for decryption
+                output_dir = os.path.join(temp_dir, "decrypted_output")
+                
+                # Decrypt the data using decrypt_unzip_verify
+                decrypt_result = server.decrypt_unzip_verify(
+                    encrypted_file_path, 
+                    config.ED_PUB_PATH, 
+                    config.AES_KEY_PATH, 
+                    output_dir
+                )
+                
+                # Check if decryption was successful
+                if not decrypt_result.get('success', False):
+                    logging.error(f"Decryption failed for data from {client_address}: {decrypt_result.get('error', 'Unknown error')}")
                     return
                 
-                # Read decrypted data
+                # Check signature verification - reject data if verification fails
+                if not decrypt_result.get('verified', True):
+                    logging.error(f"Signature verification failed for data from {client_address}. Data rejected for security reasons.")
+                    return
+                
+                # Get the extracted files
+                extracted_files = decrypt_result.get('files', [])
+                if not extracted_files:
+                    logging.error(f"No files extracted from data from {client_address}")
+                    return
+                
+                # Read the decrypted data from the first extracted file
+                # (assuming the main data file is the first/only non-signature file)
+                decrypted_file_path = extracted_files[0]
                 with open(decrypted_file_path, 'rb') as f:
                     decrypted_data = f.read()
                 
@@ -346,9 +367,9 @@ class UDPDNSReceiver:
                         
                         # Insert batch record for empty packet
                         cursor.execute("""
-                            INSERT INTO upload_batches (batch_id, record_count, received_at, status, client_address)
-                            VALUES (?, ?, ?, ?, ?)
-                        """, (batch_id, 0, processed_at, 'processed', str(client_address)))
+                            INSERT INTO upload_batches (batch_id, record_count, received_at, status)
+                            VALUES (?, ?, ?, ?)
+                        """, (batch_id, 0, processed_at, 'processed'))
                         
                         conn.commit()
                     
@@ -364,11 +385,11 @@ class UDPDNSReceiver:
                 with sqlite3.connect(config.PDNS_DATABASE) as conn:
                     cursor = conn.cursor()
                     
-                    # Insert batch record
+                    # Insert batch record (including signature verification status)
                     cursor.execute("""
-                        INSERT INTO upload_batches (batch_id, record_count, received_at, status, client_address)
-                        VALUES (?, ?, ?, ?, ?)
-                    """, (batch_id, len(dns_records), processed_at, 'processed', str(client_address)))
+                        INSERT INTO upload_batches (batch_id, record_count, received_at, status)
+                        VALUES (?, ?, ?, ?)
+                    """, (batch_id, len(dns_records), processed_at, 'processed'))
                     
                     # Insert DNS records
                     for record in dns_records:
@@ -388,7 +409,7 @@ class UDPDNSReceiver:
                     
                     conn.commit()
                 
-                logging.info(f"Successfully processed {len(dns_records)} DNS records from {client_address} in batch {batch_id}")
+                logging.info(f"Successfully processed {len(dns_records)} DNS records from {client_address} in batch {batch_id} (signature verified: {decrypt_result.get('verified', True)})")
                 
             finally:
                 # Clean up temporary files
@@ -600,23 +621,31 @@ def delete_user(user_id):
         conn.close()
 
 def upd_listener_loop():
-    # Create and start the UDP server
-    udp_receiver = UDPDNSReceiver(host='0.0.0.0', port=9999)
+    server = UDPDNSReceiver(
+        host='0.0.0.0',
+        port=9999,
+        max_packet_size=65507
+    )
+    
     try:
-        udp_receiver.start_server()
+        logging.info("Starting UDP DNS Receiver...")
+        server.start_server()
     except KeyboardInterrupt:
-        print("Shutting down UDP server...")
-        udp_receiver.stop_server()
-
+        logging.info("Received interrupt signal, shutting down...")
+    except Exception as e:
+        logging.error(f"Server error: {e}")
+    finally:
+        server.stop_server()
+        logging.info("Server stopped")
 
 if __name__ == '__main__':    
     # init database
     db.init_user_db(config.USER_DATABASE)
     db.init_pdns_db(config.PDNS_DATABASE)
 
-    app.secret_key = os.urandom(24)  
-    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
-    
     heartbeat_thread = threading.Thread(target=upd_listener_loop, daemon=True)
     heartbeat_thread.start()
+
+    app.secret_key = os.urandom(24)  
+    app.run(debug=True, host='0.0.0.0', port=5000, use_reloader=False)
     

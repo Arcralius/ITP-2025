@@ -29,6 +29,30 @@
             padding-bottom: 10px;
             margin-bottom: 20px;
         }
+        .header-info {
+            display: flex;
+            align-items: center;
+            gap: 20px;
+        }
+        .health-status {
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 12px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .health-healthy {
+            background-color: #27ae60;
+            color: white;
+        }
+        .health-unhealthy {
+            background-color: #e74c3c;
+            color: white;
+        }
+        .last-update {
+            font-size: 12px;
+            color: #7f8c8d;
+        }
         h1 {
             margin: 0;
             color: #2c3e50;
@@ -46,14 +70,48 @@
         #refreshButton:hover {
             background-color: #2980b9;
         }
+        
+        /* Stats Dashboard */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        .stat-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+        .stat-card h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            opacity: 0.9;
+        }
+        .stat-value {
+            font-size: 32px;
+            font-weight: bold;
+            margin: 0 0 5px 0;
+        }
+        .stat-subtitle {
+            font-size: 12px;
+            opacity: 0.8;
+        }
+        
         table.dataTable {
-            width: 100%;
+            width: 100% !important;
             margin: 20px 0;
             border-collapse: collapse;
+            table-layout: fixed;
         }
         table.dataTable th, table.dataTable td {
             padding: 12px 15px;
-            word-wrap: break-word; /* Helps with long strings like payloads */
+            word-wrap: break-word;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         table.dataTable thead th {
             background-color: #34495e;
@@ -70,11 +128,12 @@
             padding: 5px;
         }
         .payload-cell {
-            max-width: 300px; /* Limit width of payload cell */
+            max-width: 200px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        
         /* Tab styles */
         .tab {
             overflow: hidden;
@@ -104,20 +163,138 @@
             border: 1px solid #ccc;
             border-top: none;
             border-radius: 0 0 5px 5px;
+            min-height: 500px;
         }
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .status-success {
+            background-color: #27ae60;
+            color: white;
+        }
+        .status-warning {
+            background-color: #f39c12;
+            color: white;
+        }
+        .status-secondary {
+            background-color: #95a5a6;
+            color: white;
+        }
+        
+        /* Sensor status indicators */
+        .sensor-status {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+        .sensor-active {
+            background-color: #27ae60;
+        }
+        .sensor-inactive {
+            background-color: #e74c3c;
+        }
+        .sensor-warning {
+            background-color: #f39c12;
+        }
+        
+        /* Consistent column widths */
+        #heartbeatsTable th:nth-child(1), #heartbeatsTable td:nth-child(1) { width: 8%; }
+        #heartbeatsTable th:nth-child(2), #heartbeatsTable td:nth-child(2) { width: 20%; }
+        #heartbeatsTable th:nth-child(3), #heartbeatsTable td:nth-child(3) { width: 36%; }
+        #heartbeatsTable th:nth-child(4), #heartbeatsTable td:nth-child(4) { width: 36%; }
+        
+        #dnsTable th:nth-child(1), #dnsTable td:nth-child(1) { width: 8%; }
+        #dnsTable th:nth-child(2), #dnsTable td:nth-child(2) { width: 15%; }
+        #dnsTable th:nth-child(3), #dnsTable td:nth-child(3) { width: 25%; }
+        #dnsTable th:nth-child(4), #dnsTable td:nth-child(4) { width: 15%; }
+        #dnsTable th:nth-child(5), #dnsTable td:nth-child(5) { width: 10%; }
+        #dnsTable th:nth-child(6), #dnsTable td:nth-child(6) { width: 13.5%; }
+        #dnsTable th:nth-child(7), #dnsTable td:nth-child(7) { width: 13.5%; }
+        
+        #udpTable th:nth-child(1), #udpTable td:nth-child(1) { width: 6%; }
+        #udpTable th:nth-child(2), #udpTable td:nth-child(2) { width: 12%; }
+        #udpTable th:nth-child(3), #udpTable td:nth-child(3) { width: 12%; }
+        #udpTable th:nth-child(4), #udpTable td:nth-child(4) { width: 12%; }
+        #udpTable th:nth-child(5), #udpTable td:nth-child(5) { width: 8%; }
+        #udpTable th:nth-child(6), #udpTable td:nth-child(6) { width: 8%; }
+        #udpTable th:nth-child(7), #udpTable td:nth-child(7) { width: 25%; }
+        #udpTable th:nth-child(8), #udpTable td:nth-child(8) { width: 17%; }
+        
+        #sensorsTable th:nth-child(1), #sensorsTable td:nth-child(1) { width: 10%; }
+        #sensorsTable th:nth-child(2), #sensorsTable td:nth-child(2) { width: 25%; }
+        #sensorsTable th:nth-child(3), #sensorsTable td:nth-child(3) { width: 25%; }
+        #sensorsTable th:nth-child(4), #sensorsTable td:nth-child(4) { width: 20%; }
+        #sensorsTable th:nth-child(5), #sensorsTable td:nth-child(5) { width: 20%; }
     </style>
 </head>
 <body>
 
 <div class="container">
     <div class="header-controls">
-        <h1>Sensor Data Dashboard</h1>
+        <div class="header-info">
+            <h1>Sensor Data Dashboard</h1>
+            <div class="health-status" id="healthStatus">Checking...</div>
+            <div class="last-update" id="lastUpdate">Loading...</div>
+        </div>
+        <button id="refreshButton" onclick="refreshActiveTable()">Refresh</button>
+    </div>
+
+    <!-- Stats Dashboard -->
+    <div class="stats-grid" id="statsGrid">
+        <div class="stat-card">
+            <h3>Heartbeats</h3>
+            <div class="stat-value" id="heartbeatsCount">-</div>
+            <div class="stat-subtitle" id="latestHeartbeat">Loading...</div>
+        </div>
+        <div class="stat-card">
+            <h3>DNS Queries</h3>
+            <div class="stat-value" id="dnsCount">-</div>
+            <div class="stat-subtitle" id="latestDns">Loading...</div>
+        </div>
+        <div class="stat-card">
+            <h3>UDP Packets</h3>
+            <div class="stat-value" id="udpCount">-</div>
+            <div class="stat-subtitle" id="latestUdp">Loading...</div>
+        </div>
+        <div class="stat-card">
+            <h3>Active Sensors</h3>
+            <div class="stat-value" id="sensorsCount">-</div>
+            <div class="stat-subtitle" id="sensorStatus">Loading...</div>
+        </div>
     </div>
 
     <div class="tab">
-        <button class="tablinks" onclick="openTab(event, 'Heartbeats')" id="defaultOpen">Heartbeats</button>
+        <button class="tablinks" onclick="openTab(event, 'Overview')" id="defaultOpen">Overview</button>
+        <button class="tablinks" onclick="openTab(event, 'Heartbeats')">Heartbeats</button>
         <button class="tablinks" onclick="openTab(event, 'DNS')">DNS Queries</button>
         <button class="tablinks" onclick="openTab(event, 'UDP')">UDP Packets</button>
+        <button class="tablinks" onclick="openTab(event, 'Sensors')">Sensors</button>
+    </div>
+
+    <div id="Overview" class="tabcontent">
+        <h2>System Overview</h2>
+        <p>Welcome to the Sensor Data Dashboard. Use the tabs above to navigate between different data views:</p>
+        <ul>
+            <li><strong>Heartbeats:</strong> Monitor sensor connectivity and health</li>
+            <li><strong>DNS Queries:</strong> View DNS resolution attempts from sensors</li>
+            <li><strong>UDP Packets:</strong> Examine captured UDP network traffic</li>
+            <li><strong>Sensors:</strong> Manage and monitor active sensors</li>
+        </ul>
+        <p>The dashboard automatically refreshes every 30 seconds. Use the Refresh button to manually update the current view.</p>
+        
+        <h3>Smart Status Detection</h3>
+        <p>Sensors are automatically classified based on their last activity:</p>
+        <ul>
+            <li>🟢 <strong>Active</strong> (last seen < 10 minutes)</li>
+            <li>🟡 <strong>Warning</strong> (10-60 minutes)</li>
+            <li>🔴 <strong>Inactive</strong> (> 60 minutes)</li>
+        </ul>
     </div>
 
     <div id="Heartbeats" class="tabcontent">
@@ -131,16 +308,7 @@
                     <th>Received At (UTC)</th>
                 </tr>
             </thead>
-            <tbody>
-                {% for hb in heartbeats %}
-                <tr>
-                    <td>{{ hb.id }}</td>
-                    <td>{{ hb.sensor_id }}</td>
-                    <td>{{ hb.timestamp }}</td>
-                    <td>{{ hb.received_at }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
+            <tbody></tbody>
         </table>
     </div>
 
@@ -158,19 +326,7 @@
                     <th>Received At (UTC)</th>
                 </tr>
             </thead>
-            <tbody>
-                {% for query in dns_queries %}
-                <tr>
-                    <td>{{ query.id }}</td>
-                    <td>{{ query.sensor_id }}</td>
-                    <td>{{ query.domain }}</td>
-                    <td>{{ query.resolved_ip }}</td>
-                    <td>{{ query.status }}</td>
-                    <td>{{ query.timestamp }}</td>
-                    <td>{{ query.received_at }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
+            <tbody></tbody>
         </table>
     </div>
 
@@ -189,20 +345,23 @@
                     <th>Received At (UTC)</th>
                 </tr>
             </thead>
-            <tbody>
-                {% for packet in udp_packets %}
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <div id="Sensors" class="tabcontent">
+        <h2>Active Sensors</h2>
+        <table id="sensorsTable" class="display">
+            <thead>
                 <tr>
-                    <td>{{ packet.id }}</td>
-                    <td>{{ packet.sensor_id }}</td>
-                    <td>{{ packet.src_ip }}</td>
-                    <td>{{ packet.dst_ip }}</td>
-                    <td>{{ packet.src_port }}</td>
-                    <td>{{ packet.dst_port }}</td>
-                    <td class="payload-cell" title="{{ packet.payload_base64 }}">{{ packet.payload_base64 }}</td>
-                    <td>{{ packet.received_at }}</td>
+                    <th>Status</th>
+                    <th>Sensor ID</th>
+                    <th>Last Seen</th>
+                    <th>Heartbeat Count</th>
+                    <th>Activity Level</th>
                 </tr>
-                {% endfor %}
-            </tbody>
+            </thead>
+            <tbody></tbody>
         </table>
     </div>
 </div>
@@ -213,6 +372,7 @@
 <script>
     // Store DataTable instances
     const initializedTables = {};
+    let currentActiveTab = 'Overview';
 
     function openTab(evt, tabName) {
         // Declare all variables
@@ -233,19 +393,327 @@
         // Show the current tab, and add an "active" class to the button that opened the tab
         document.getElementById(tabName).style.display = "block";
         evt.currentTarget.className += " active";
+        currentActiveTab = tabName;
         
-        // Initialize DataTable if it hasn't been already
-        const tableId = document.getElementById(tabName).querySelector('table').id;
-        if (!initializedTables[tableId]) {
-            initializedTables[tableId] = $('#' + tableId).DataTable();
-        } else {
-            // Adjust columns for proper width if table was already initialized
-            initializedTables[tableId].columns.adjust().draw();
+        // Initialize DataTable if it hasn't been already and if tab has a table
+        const tabElement = document.getElementById(tabName);
+        const tableElement = tabElement.querySelector('table');
+        if (tableElement) {
+            const tableId = tableElement.id;
+            if (!initializedTables[tableId]) {
+                initializeTable(tableId);
+            } else {
+                // Adjust columns for proper width if table was already initialized
+                initializedTables[tableId].columns.adjust().draw();
+            }
         }
     }
 
-    // Get the element with id="defaultOpen" and click on it to open the first tab
-    document.getElementById("defaultOpen").click();
+    function initializeTable(tableId) {
+        let config = {};
+        
+        if (tableId === 'heartbeatsTable') {
+            config = {
+                ajax: {
+                    url: '/api/heartbeats',
+                    dataSrc: function(json) {
+                        if (json.error) {
+                            console.error('Heartbeats API Error:', json.error);
+                            alert('Error loading heartbeat data: ' + json.error);
+                            return [];
+                        }
+                        console.log('Heartbeats data loaded:', json.data.length, 'records');
+                        return json.data;
+                    },
+                    error: function(xhr, error, code) {
+                        console.error('Heartbeats AJAX Error:', error, code);
+                        alert('Failed to load heartbeat data. Check console for details.');
+                    }
+                },
+                columns: [
+                    { data: 'id' },
+                    { data: 'sensor_id' },
+                    { data: 'timestamp' },
+                    { data: 'received_at' }
+                ],
+                order: [[3, 'desc']]
+            };
+        } else if (tableId === 'dnsTable') {
+            config = {
+                ajax: {
+                    url: '/api/dns-queries',
+                    dataSrc: function(json) {
+                        if (json.error) {
+                            console.error('DNS API Error:', json.error);
+                            alert('Error loading DNS data: ' + json.error);
+                            return [];
+                        }
+                        console.log('DNS data loaded:', json.data.length, 'records');
+                        return json.data;
+                    },
+                    error: function(xhr, error, code) {
+                        console.error('DNS AJAX Error:', error, code);
+                        alert('Failed to load DNS data. Check console for details.');
+                    }
+                },
+                columns: [
+                    { data: 'id' },
+                    { data: 'sensor_id' },
+                    { data: 'domain' },
+                    { data: 'resolved_ip' },
+                    { 
+                        data: 'status',
+                        render: function(data, type, row) {
+                            if (data) {
+                                return '<span class="status-badge status-success">' + data + '</span>';
+                            }
+                            return '<span class="status-badge status-secondary">Unknown</span>';
+                        }
+                    },
+                    { data: 'timestamp' },
+                    { data: 'received_at' }
+                ],
+                order: [[6, 'desc']]
+            };
+        } else if (tableId === 'udpTable') {
+            config = {
+                ajax: {
+                    url: '/api/udp-packets',
+                    dataSrc: function(json) {
+                        if (json.error) {
+                            console.error('UDP API Error:', json.error);
+                            alert('Error loading UDP data: ' + json.error);
+                            return [];
+                        }
+                        console.log('UDP data loaded:', json.data.length, 'records');
+                        return json.data;
+                    },
+                    error: function(xhr, error, code) {
+                        console.error('UDP AJAX Error:', error, code);
+                        alert('Failed to load UDP data. Check console for details.');
+                    }
+                },
+                columns: [
+                    { data: 'id' },
+                    { data: 'sensor_id' },
+                    { data: 'src_ip' },
+                    { data: 'dst_ip' },
+                    { data: 'src_port' },
+                    { data: 'dst_port' },
+                    { 
+                        data: 'payload_base64',
+                        render: function(data, type, row) {
+                            if (type === 'display' && data && data.length > 40) {
+                                return '<span title="' + data + '">' + data.substr(0, 40) + '...</span>';
+                            }
+                            return data || '';
+                        }
+                    },
+                    { data: 'received_at' }
+                ],
+                order: [[7, 'desc']]
+            };
+        } else if (tableId === 'sensorsTable') {
+            config = {
+                ajax: {
+                    url: '/api/sensors',
+                    dataSrc: function(json) {
+                        if (json.error) {
+                            console.error('Sensors API Error:', json.error);
+                            alert('Error loading sensor data: ' + json.error);
+                            return [];
+                        }
+                        console.log('Sensors data loaded:', json.data.length, 'records');
+                        return json.data;
+                    },
+                    error: function(xhr, error, code) {
+                        console.error('Sensors AJAX Error:', error, code);
+                        alert('Failed to load sensor data. Check console for details.');
+                    }
+                },
+                columns: [
+                    { 
+                        data: 'last_seen',
+                        render: function(data, type, row) {
+                            if (type === 'display') {
+                                const lastSeen = new Date(data);
+                                const now = new Date();
+                                const diffMinutes = (now - lastSeen) / (1000 * 60);
+                                
+                                let statusClass = 'sensor-active';
+                                if (diffMinutes > 60) {
+                                    statusClass = 'sensor-inactive';
+                                } else if (diffMinutes > 10) {
+                                    statusClass = 'sensor-warning';
+                                }
+                                
+                                return '<span class="sensor-status ' + statusClass + '"></span>';
+                            }
+                            return data;
+                        }
+                    },
+                    { data: 'sensor_id' },
+                    { 
+                        data: 'last_seen',
+                        render: function(data, type, row) {
+                            if (type === 'display') {
+                                return new Date(data).toLocaleString();
+                            }
+                            return data;
+                        }
+                    },
+                    { data: 'heartbeat_count' },
+                    { 
+                        data: 'heartbeat_count',
+                        render: function(data, type, row) {
+                            if (type === 'display') {
+                                if (data > 1000) return 'Very High';
+                                if (data > 500) return 'High';
+                                if (data > 100) return 'Medium';
+                                if (data > 10) return 'Low';
+                                return 'Very Low';
+                            }
+                            return data;
+                        }
+                    }
+                ],
+                order: [[2, 'desc']] // Order by last_seen
+            };
+        }
+
+        // Common DataTable settings
+        config.pageLength = 25;
+        config.responsive = true;
+        config.processing = true;
+        config.scrollX = true;
+        config.autoWidth = false;
+        config.language = {
+            emptyTable: "No data available"
+        };
+
+        initializedTables[tableId] = $('#' + tableId).DataTable(config);
+    }
+
+    function loadStats() {
+        fetch('/api/stats')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Stats API Error:', data.error);
+                    return;
+                }
+                
+                const stats = data.data;
+                
+                // Update stat cards
+                document.getElementById('heartbeatsCount').textContent = stats.heartbeats_count.toLocaleString();
+                document.getElementById('dnsCount').textContent = stats.dns_queries_count.toLocaleString();
+                document.getElementById('udpCount').textContent = stats.udp_packets_count.toLocaleString();
+                
+                // Update latest timestamps
+                document.getElementById('latestHeartbeat').textContent = 
+                    stats.latest_heartbeat === 'No data' ? 'No data' : 'Latest: ' + new Date(stats.latest_heartbeat).toLocaleString();
+                document.getElementById('latestDns').textContent = 
+                    stats.latest_dns_query === 'No data' ? 'No data' : 'Latest: ' + new Date(stats.latest_dns_query).toLocaleString();
+                document.getElementById('latestUdp').textContent = 
+                    stats.latest_udp_packet === 'No data' ? 'No data' : 'Latest: ' + new Date(stats.latest_udp_packet).toLocaleString();
+                
+                console.log('Stats loaded successfully');
+            })
+            .catch(error => {
+                console.error('Failed to load stats:', error);
+            });
+    }
+
+    function loadSensorCount() {
+        fetch('/api/sensors')
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Sensors API Error:', data.error);
+                    return;
+                }
+                
+                const sensors = data.data;
+                const now = new Date();
+                let activeCount = 0;
+                
+                sensors.forEach(sensor => {
+                    const lastSeen = new Date(sensor.last_seen);
+                    const diffMinutes = (now - lastSeen) / (1000 * 60);
+                    if (diffMinutes <= 10) {
+                        activeCount++;
+                    }
+                });
+                
+                document.getElementById('sensorsCount').textContent = sensors.length;
+                document.getElementById('sensorStatus').textContent = activeCount + ' active now';
+            })
+            .catch(error => {
+                console.error('Failed to load sensor count:', error);
+                document.getElementById('sensorsCount').textContent = 'Error';
+                document.getElementById('sensorStatus').textContent = 'Failed to load';
+            });
+    }
+
+    function checkHealth() {
+        fetch('/api/health')
+            .then(response => response.json())
+            .then(data => {
+                const healthElement = document.getElementById('healthStatus');
+                const updateElement = document.getElementById('lastUpdate');
+                
+                if (data.status === 'healthy') {
+                    healthElement.textContent = 'System Healthy';
+                    healthElement.className = 'health-status health-healthy';
+                } else {
+                    healthElement.textContent = 'System Issues';
+                    healthElement.className = 'health-status health-unhealthy';
+                }
+                
+                updateElement.textContent = 'Last updated: ' + new Date().toLocaleString();
+            })
+            .catch(error => {
+                console.error('Health check failed:', error);
+                const healthElement = document.getElementById('healthStatus');
+                healthElement.textContent = 'Connection Error';
+                healthElement.className = 'health-status health-unhealthy';
+            });
+    }
+
+    function refreshActiveTable() {
+        // Refresh stats and health regardless of active tab
+        loadStats();
+        loadSensorCount();
+        checkHealth();
+        
+        // Refresh active table if it exists
+        if (currentActiveTab !== 'Overview') {
+            const activeTableElement = document.getElementById(currentActiveTab).querySelector('table');
+            if (activeTableElement) {
+                const activeTableId = activeTableElement.id;
+                if (initializedTables[activeTableId]) {
+                    initializedTables[activeTableId].ajax.reload(null, false);
+                }
+            }
+        }
+    }
+
+    // Initialize dashboard
+    document.addEventListener('DOMContentLoaded', function() {
+        // Load initial stats
+        loadStats();
+        loadSensorCount();
+        checkHealth();
+        
+        // Open default tab
+        document.getElementById("defaultOpen").click();
+        
+        // Auto-refresh every 30 seconds
+        setInterval(function() {
+            refreshActiveTable();
+        }, 30000);
+    });
 </script>
 
 </body>

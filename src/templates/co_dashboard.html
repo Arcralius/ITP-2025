@@ -46,35 +46,76 @@
         #refreshButton:hover {
             background-color: #2980b9;
         }
-        table.dataTable {
+        
+        /* Consistent table container sizing */
+        .table-container {
             width: 100%;
+            min-height: 600px; /* Ensures consistent height */
+            overflow-x: auto;
+        }
+        
+        table.dataTable {
+            width: 100% !important;
             margin: 20px 0;
             border-collapse: collapse;
+            table-layout: fixed; /* Forces consistent column widths */
         }
+        
         table.dataTable th, table.dataTable td {
             padding: 12px 15px;
             word-wrap: break-word;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
+        
         table.dataTable thead th {
             background-color: #34495e;
             color: #ffffff;
             font-weight: 600;
+            white-space: nowrap;
         }
+        
         table.dataTable tbody tr:nth-child(even) {
             background-color: #f2f2f2;
         }
+        
+        /* Specific column widths for consistency */
+        #pdnsTable th:nth-child(1), #pdnsTable td:nth-child(1) { width: 8%; } /* ID */
+        #pdnsTable th:nth-child(2), #pdnsTable td:nth-child(2) { width: 15%; } /* Timestamp */
+        #pdnsTable th:nth-child(3), #pdnsTable td:nth-child(3) { width: 25%; } /* Domain */
+        #pdnsTable th:nth-child(4), #pdnsTable td:nth-child(4) { width: 15%; } /* Resolved IP */
+        #pdnsTable th:nth-child(5), #pdnsTable td:nth-child(5) { width: 10%; } /* Status */
+        #pdnsTable th:nth-child(6), #pdnsTable td:nth-child(6) { width: 13.5%; } /* Received At */
+        #pdnsTable th:nth-child(7), #pdnsTable td:nth-child(7) { width: 13.5%; } /* Processed At */
+        
+        #batchesTable th:nth-child(1), #batchesTable td:nth-child(1) { width: 10%; } /* ID */
+        #batchesTable th:nth-child(2), #batchesTable td:nth-child(2) { width: 25%; } /* Batch ID */
+        #batchesTable th:nth-child(3), #batchesTable td:nth-child(3) { width: 15%; } /* Record Count */
+        #batchesTable th:nth-child(4), #batchesTable td:nth-child(4) { width: 25%; } /* Received At */
+        #batchesTable th:nth-child(5), #batchesTable td:nth-child(5) { width: 25%; } /* Status */
+        
+        #heartbeatsTable th:nth-child(1), #heartbeatsTable td:nth-child(1) { width: 33.33%; } /* Sensor ID */
+        #heartbeatsTable th:nth-child(2), #heartbeatsTable td:nth-child(2) { width: 33.33%; } /* Timestamp */
+        #heartbeatsTable th:nth-child(3), #heartbeatsTable td:nth-child(3) { width: 33.34%; } /* Received At */
+        
         .dataTables_wrapper .dataTables_filter input,
         .dataTables_wrapper .dataTables_length select {
             border: 1px solid #ccc;
             border-radius: 4px;
             padding: 5px;
         }
+        
+        .dataTables_wrapper {
+            width: 100%;
+        }
+        
         .payload-cell {
             max-width: 300px;
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
+        
         /* Tab styles */
         .tab {
             overflow: hidden;
@@ -104,6 +145,7 @@
             border: 1px solid #ccc;
             border-top: none;
             border-radius: 0 0 5px 5px;
+            min-height: 650px; /* Consistent tab content height */
         }
         .status-badge {
             padding: 4px 8px;
@@ -142,50 +184,56 @@
 
     <div id="PDNS" class="tabcontent">
         <h2>PDNS Data</h2>
-        <table id="pdnsTable" class="display">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Timestamp</th>
-                    <th>Domain</th>
-                    <th>Resolved IP</th>
-                    <th>Status</th>
-                    <th>Received At</th>
-                    <th>Processed At</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
+        <div class="table-container">
+            <table id="pdnsTable" class="display">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Timestamp</th>
+                        <th>Domain</th>
+                        <th>Resolved IP</th>
+                        <th>Status</th>
+                        <th>Received At</th>
+                        <th>Processed At</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
     </div>
 
     <div id="Batches" class="tabcontent">
         <h2>Upload Batches</h2>
-        <table id="batchesTable" class="display">
-            <thead>
-                <tr>
-                    <th>ID</th>
-                    <th>Batch ID</th>
-                    <th>Record Count</th>
-                    <th>Received At</th>
-                    <th>Status</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
+        <div class="table-container">
+            <table id="batchesTable" class="display">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Batch ID</th>
+                        <th>Record Count</th>
+                        <th>Received At</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
     </div>
 
     <div id="Heartbeats" class="tabcontent">
         <h2>Heartbeat Logs</h2>
-        <table id="heartbeatsTable" class="display">
-            <thead>
-                <tr>
-                    <th>Sensor ID</th>
-                    <th>Timestamp</th>
-                    <th>Received At</th>
-                </tr>
-            </thead>
-            <tbody></tbody>
-        </table>
+        <div class="table-container">
+            <table id="heartbeatsTable" class="display">
+                <thead>
+                    <tr>
+                        <th>Sensor ID</th>
+                        <th>Timestamp</th>
+                        <th>Received At</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -332,6 +380,8 @@
         config.pageLength = 25;
         config.responsive = true;
         config.processing = true;
+        config.scrollX = true; // Enable horizontal scrolling for consistency
+        config.autoWidth = false; // Disable auto width to use fixed column widths
         config.language = {
             emptyTable: "No data available"
         };

@@ -139,7 +139,8 @@ def init_pdns_db(db_name="pdns.db"):
                     resolved_ip TEXT NOT NULL,
                     status TEXT,
                     received_at TEXT NOT NULL,
-                    processed_at TEXT NOT NULL
+                    processed_at TEXT NOT NULL,
+                    batch_id TEXT NOT NULL
                 );
             """)
             print("- 'pdns_data' table created or already exists.")

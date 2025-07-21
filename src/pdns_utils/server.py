@@ -1,7 +1,8 @@
 from datetime import datetime
-import hashlib, logging, os, re, zipfile, json, base64, os, logging
+import hashlib, logging, os, re, zipfile, os, logging
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.exceptions import InvalidSignature
 from pathlib import Path
 
@@ -260,6 +261,9 @@ def decrypt_unzip_verify(encrypted_file_path, public_key_path, aes_key_path, out
     Returns:
         dict: Result dictionary with 'success' boolean and 'files' list if successful
     """
+    public_key_path = append_today_date_if_missing(public_key_path)
+    aes_key_path = append_today_date_if_missing(aes_key_path)
+
     try:
         logger.info(f"Starting decrypt_unzip_verify process for: {encrypted_file_path}")
         
@@ -370,12 +374,22 @@ def decrypt_unzip_verify(encrypted_file_path, public_key_path, aes_key_path, out
             }
             
         except InvalidSignature:
-            logger.error("Signature verification failed")
+            logger.error(f"SECURITY ALERT: Signature verification failed for file: {original_filename}")
+            logger.error("Data integrity compromised - signature does not match file content")
+            
+            # Clean up extracted files since verification failed
+            for extracted_file in extracted_files:
+                try:
+                    if os.path.exists(extracted_file):
+                        os.remove(extracted_file)
+                        logger.info(f"Removed unverified file: {extracted_file}")
+                except Exception as cleanup_error:
+                    logger.error(f"Error removing unverified file {extracted_file}: {cleanup_error}")
+            
             return {
-                'success': True,
-                'files': extracted_files,
+                'success': False,
                 'verified': False,
-                'error': 'Signature verification failed',
+                'error': 'Signature verification failed - data integrity compromised',
                 'original_filename': original_filename
             }
     
@@ -387,4 +401,14 @@ def decrypt_unzip_verify(encrypted_file_path, public_key_path, aes_key_path, out
                 os.remove(temp_zip_path)
             except:
                 pass
+        
+        # Clean up any extracted files if verification failed or error occurred
+        if 'extracted_files' in locals():
+            for extracted_file in extracted_files:
+                try:
+                    if os.path.exists(extracted_file):
+                        os.remove(extracted_file)
+                except:
+                    pass
+        
         return {'success': False, 'error': str(e)}
