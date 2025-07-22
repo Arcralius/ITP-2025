@@ -1,8 +1,9 @@
-import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, zipfile, shutil, threading
+import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, shutil, threading
 from datetime import datetime, timezone, UTC
 from functools import wraps
 import config
 from flask import Flask, request, render_template, jsonify, send_file, flash, session, redirect, url_for
+from werkzeug.security import check_password_hash
 from flask_apscheduler import APScheduler
 from pdns_utils import database as db, server
 
@@ -19,17 +20,69 @@ except Exception as e:
 os.makedirs(config.LOG_DIR, exist_ok=True)
 os.makedirs(config.KEY_STORE_DIR, exist_ok=True)
 
-# TODO: add api documentation and data security and validation https://swagger.io/docs/ use this to document apis used
-# TODO: implement login for PDNS data routes (anyone in the user database can access)
 # TODO: make collector and privacy shield dashboards consistent style & features 
+# TODO: add api documentation and data security and validation https://swagger.io/docs/ use this to document apis used
 # TODO: format logging (red for error, yellow for warning, green for info)
 
 # --- Display PDNS data ---
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            flash('Please log in to access this page.', 'warning')
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if not username or not password:
+            flash('Please enter both username and password.', 'error')
+            return render_template('login.html')
+        
+        try:
+            conn = db.get_db_connection("user.db")
+            cursor = conn.cursor()
+            
+            # Query user from database
+            cursor.execute('SELECT id, username, password, guid FROM users WHERE username = ?', (username,))
+            user = cursor.fetchone()
+            conn.close()
+            
+            if user and check_password_hash(user['password'], password):
+                # Login successful
+                session['user_id'] = user['id']
+                session['username'] = user['username']
+                session['guid'] = user['guid']
+                flash(f'Welcome back, {username}!', 'success')
+                return redirect(url_for('dashboard'))
+            else:
+                flash('Invalid username or password.', 'error')
+                
+        except Exception as e:
+            print(f"Login error: {e}")
+            flash('An error occurred during login. Please try again.', 'error')
+    
+    return render_template('co_login.html')
+
+@app.route('/logout')
+def logout():
+    """Handle user logout"""
+    session.clear()
+    flash('You have been logged out successfully.', 'success')
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def dashboard():
     return render_template('co_dashboard.html')
 
 @app.route('/api/pdns-data')
+@login_required
 def get_pdns_data():
     try:
         conn = db.get_db_connection(config.PDNS_DATABASE)
@@ -64,6 +117,7 @@ def get_pdns_data():
         return jsonify({'data': [], 'error': str(e)})
 
 @app.route('/api/upload-batches')
+@login_required
 def get_upload_batches():
     try:
         conn = db.get_db_connection(config.PDNS_DATABASE)
@@ -96,84 +150,63 @@ def get_upload_batches():
         return jsonify({'data': [], 'error': str(e)})
 
 @app.route('/api/heartbeats')
+@login_required
 def get_heartbeats():
-    heartbeats = []
-    log_file_path = './heartbeats.jsonl'
-    
+    """Retrieves heartbeat data from the SQLite database."""
     try:
-        if os.path.exists(log_file_path):
-            with open(log_file_path, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        try:
-                            heartbeat = json.loads(line)
-                            heartbeats.append({
-                                'sensor_id': heartbeat.get('sensor_id', ''),
-                                'timestamp': heartbeat.get('timestamp', ''),
-                                'received_at': heartbeat.get('received_at', '')
-                            })
-                        except json.JSONDecodeError:
-                            continue
-        
-        # Sort by received_at descending
-        heartbeats.sort(key=lambda x: x['received_at'], reverse=True)
+        with sqlite3.connect("pdns.db") as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT sensor_id, timestamp, received_at
+                FROM heartbeats
+                ORDER BY received_at DESC
+            """)
+            rows = cursor.fetchall()
+            
+            heartbeats = []
+            for row in rows:
+                heartbeats.append({
+                    'sensor_id': row[0],
+                    'timestamp': row[1],
+                    'received_at': row[2]
+                })
         
         return jsonify({'data': heartbeats})
+    except sqlite3.Error as e:
+        print(f"[Database Error] Failed to retrieve heartbeats: {e}")
+        logging.exception(f"Heartbeat retrieval database error: {e}")
+        return jsonify({'data': [], 'error': f'Database error: {str(e)}'})
     except Exception as e:
+        print(f"[Error] Failed to retrieve heartbeats: {e}")
         return jsonify({'data': [], 'error': str(e)})
 
-@app.route('/debug')
-def debug():
-    debug_info = {
-        'database_connection': False,
-        'pdns_table_exists': False,
-        'upload_batches_table_exists': False,
-        'pdns_count': 0,
-        'batches_count': 0,
-        'heartbeats_file_exists': False,
-        'errors': []
-    }
-    
+@app.route('/api/health', methods=['GET'])
+@login_required
+def health_check():
+    """Simple health check endpoint"""
     try:
         conn = db.get_db_connection(config.PDNS_DATABASE)
-        if conn:
-            debug_info['database_connection'] = True
-            
-            # Check if tables exist
-            cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = [row[0] for row in cursor.fetchall()]
-            
-            debug_info['pdns_table_exists'] = 'pdns_data' in tables
-            debug_info['upload_batches_table_exists'] = 'upload_batches' in tables
-            
-            # Count records if tables exist
-            if debug_info['pdns_table_exists']:
-                cursor = conn.execute("SELECT COUNT(*) FROM pdns_data")
-                debug_info['pdns_count'] = cursor.fetchone()[0]
-            
-            if debug_info['upload_batches_table_exists']:
-                cursor = conn.execute("SELECT COUNT(*) FROM upload_batches")
-                debug_info['batches_count'] = cursor.fetchone()[0]
-            
-            conn.close()
-        else:
-            debug_info['errors'].append('Could not establish database connection')
-    
+        if not conn:
+            return jsonify({'status': 'unhealthy', 'error': 'Database connection failed'}), 500
+        
+        # Test database connection
+        cursor = conn.cursor()
+        cursor.execute("SELECT 1")
+        cursor.fetchone()
+        conn.close()
+        
+        return jsonify({
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'database': 'connected'
+        })
     except Exception as e:
-        debug_info['errors'].append(f'Database error: {str(e)}')
-    
-    # Check heartbeats file
-    try:
-        debug_info['heartbeats_file_exists'] = os.path.exists('./logs/heartbeats.jsonl')
-        if debug_info['heartbeats_file_exists']:
-            with open('./logs/heartbeats.jsonl', 'r') as f:
-                line_count = sum(1 for line in f if line.strip())
-                debug_info['heartbeats_count'] = line_count
-    except Exception as e:
-        debug_info['errors'].append(f'Heartbeats file error: {str(e)}')
-    
-    return jsonify(debug_info)
+        logging.error(f"Health check failed: {e}")
+        return jsonify({
+            'status': 'unhealthy', 
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 # --- Handle Privacy Shield ---
 @scheduler.task('interval', id='daily_task', hours=24, next_run_time=datetime.now())
@@ -207,35 +240,40 @@ def serve_KeySig():
 
 @app.route("/heartbeat", methods=["POST"])
 def heartbeat():
-    """Receives and validates sensor heartbeat signals, logging them to file."""
+    """Receives and validates sensor heartbeat signals, logging them to database."""
     data = request.json
     sensor_id = data.get("sensor_id")
     timestamp = data.get("timestamp")
     signature = data.get("signature")
-
     if not all([sensor_id, timestamp, signature]):
         return jsonify({"error": "Missing fields"}), 400
-    
+   
     if db.guid_exists(sensor_id, config.USER_DATABASE):
         pwd_path = server.append_today_date_if_missing(config.PASS_PATH)
         with open(pwd_path, 'r', encoding='utf-8') as f:
             password = f.readline().strip()
-    
+   
     message = f"{sensor_id}|{timestamp}"
     expected_signature = hmac.new(password.encode(), message.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected_signature):
         return jsonify({"error": "Invalid signature"}), 401
-
-    # Log heartbeat to file
-    with open(config.HEARTBEAT_LOG_PATH, 'a', encoding='utf-8') as f:
-        log_entry = {
-            'sensor_id': sensor_id,
-            'timestamp': timestamp,
-            'received_at': datetime.now(timezone.utc).isoformat()
-        }
-        f.write(json.dumps(log_entry) + '\n')
-
-    print(f"Heartbeat from {sensor_id} received and validated, logged to file.")
+    
+    # Log heartbeat to database
+    try:
+        with sqlite3.connect("pdns.db") as conn:
+            cursor = conn.cursor()
+            received_at = datetime.now(timezone.utc).isoformat()
+            cursor.execute("""
+                INSERT INTO heartbeats (sensor_id, timestamp, received_at)
+                VALUES (?, ?, ?)
+            """, (sensor_id, timestamp, received_at))
+            conn.commit()
+        print(f"Heartbeat from {sensor_id} received and validated, logged to database.")
+    except sqlite3.Error as e:
+        print(f"[Database Error] Failed to log heartbeat: {e}")
+        logging.exception(f"Heartbeat database error: {e}")
+        return jsonify({"error": "Database error"}), 500
+    
     return jsonify({"status": "alive"}), 200
 
 class UDPDNSReceiver:
@@ -453,13 +491,8 @@ def authenticate_admin(username, password):
         cursor = conn.cursor()
         cursor.execute("SELECT username, password FROM users WHERE username = ?", (username,))
         user = cursor.fetchone()
-        
-        actual_pwd = user['password']
-        salt = actual_pwd[:32]
-        stored_hash = actual_pwd[32:]
-        password_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100_000)
 
-        if user and password_hash == stored_hash:
+        if user and check_password_hash(user['password'], password):
             return True
         return False
         
@@ -534,7 +567,6 @@ def get_users():
     users_list = []
     for user in users:
         user_dict = dict(user)
-        user_dict['password'] = base64.b64encode(user_dict['password']).decode('utf-8')
         users_list.append(user_dict)
 
     return jsonify({"data": users_list})

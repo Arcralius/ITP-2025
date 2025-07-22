@@ -1,10 +1,5 @@
-import sqlite3, hashlib, uuid, os, logging
-
-
-def generate_password_hash(password: str) -> bytes:
-    salt = os.urandom(32)
-    pwd_hash = hashlib.pbkdf2_hmac('sha256', password.encode('utf-8'), salt, 100_000)
-    return salt + pwd_hash
+import sqlite3, uuid, logging
+from werkzeug.security import generate_password_hash
 
 
 def get_db_connection(database):
@@ -125,7 +120,6 @@ def init_pdns_db(db_name="pdns.db"):
     try:
         with sqlite3.connect(db_name) as conn:
             cursor = conn.cursor()
-
             # Table for received PDNS data
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS pdns_data (
@@ -140,7 +134,7 @@ def init_pdns_db(db_name="pdns.db"):
                 );
             """)
             print("- 'pdns_data' table created or already exists.")
-
+            
             # Table for tracking upload batches
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS upload_batches (
@@ -152,7 +146,18 @@ def init_pdns_db(db_name="pdns.db"):
                 );
             """)
             print("- 'upload_batches' table created or already exists.")
-
+            
+            # Table for heartbeat data
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS heartbeats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sensor_id TEXT NOT NULL,
+                    timestamp TEXT NOT NULL,
+                    received_at TEXT NOT NULL
+                );
+            """)
+            print("- 'heartbeats' table created or already exists.")
+            
             # Indexes for better performance
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_pdns_domain ON pdns_data(domain);
@@ -163,8 +168,13 @@ def init_pdns_db(db_name="pdns.db"):
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_pdns_resolved_ip ON pdns_data(resolved_ip);
             """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_heartbeats_sensor_id ON heartbeats(sensor_id);
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_heartbeats_received_at ON heartbeats(received_at);
+            """)
             print("- Indexes created or already exist.")
-
             conn.commit()
         print("PDNS database initialization complete.")
     except sqlite3.Error as e:

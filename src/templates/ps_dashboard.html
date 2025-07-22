@@ -684,10 +684,10 @@
                 const updateElement = document.getElementById('lastUpdate');
                 
                 if (data.status === 'healthy') {
-                    healthElement.textContent = 'System Healthy';
+                    healthElement.textContent = 'Database Connected';
                     healthElement.className = 'health-status health-healthy';
                 } else {
-                    healthElement.textContent = 'System Issues';
+                    healthElement.textContent = 'Database Disconnected';
                     healthElement.className = 'health-status health-unhealthy';
                 }
                 

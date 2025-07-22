@@ -5,12 +5,11 @@ REM --- Step 1: Run the collector script ---
 echo [INFO] Starting the data collector...
 start "Collector" python ./collector.py
 echo [INFO] Collector script launched.
+echo Sleeping for 5 seconds...
+timeout /t 5 /nobreak >nul
+echo Awake!
 
-REM --- Step 2: Wait for 5 seconds ---
-echo [INFO] Waiting for 5 seconds to allow data collection...
-timeout /t 5 /nobreak > nul
-
-REM --- Step 3: Check for and create the download directory ---
+REM --- Step 2: Check for and create the download directory ---
 echo [INFO] Checking for the './client_download' directory...
 if not exist ".\\client_download" (
     echo [INFO] Directory not found. Creating it now...
@@ -19,7 +18,7 @@ if not exist ".\\client_download" (
     echo [INFO] Directory already exists.
 )
 
-REM --- Step 4: Copy the data file ---
+REM --- Step 3: Copy the data file ---
 REM This assumes there is at least one .txt file in the ./store directory.
 echo [INFO] Copying data file from './store' to './client_download'...
 copy ".\\store\\*.txt" ".\\client_download\\"
@@ -28,7 +27,7 @@ if %errorlevel% neq 0 (
     goto :eof
 )
 
-REM --- Step 5: Read the first line from the store file and run the Privacy Shield and HTTPs sensor ---
+REM --- Step 4: Read the first line from the store file and run the Privacy Shield and HTTPs sensor ---
 echo [INFO] Reading first line of data from the store file...
 
 set "FILE_TO_READ="
@@ -65,7 +64,6 @@ echo [INFO] Running the Privacy Shield and HTTPs sensor with the collected data.
 start "PrivacyShield" python privacyshield.py "%file_contents%"
 start "https dns sensor" python https_sensor.py 2919e39a-fbc9-43f3-ba64-0cea356e3850 "%file_contents%"
 
-REM --- Step 6: Done ---
+REM --- Step 5: Done ---
 
 echo [SUCCESS] Script finished successfully.
-

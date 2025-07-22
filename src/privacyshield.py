@@ -620,6 +620,9 @@ if __name__ == "__main__":
     TODO: possible future feature additions
             -> edit config from cmdline
             -> edit config from web console
+            -> right now, any sensor can send data to any privacy shield (just change the privacy shield ip can alr)
+                -> maybe gen own secrets instead of using password from collector?
+                -> or add a Privacy Shield ID?
     """
 
     if len(sys.argv) < 2:
