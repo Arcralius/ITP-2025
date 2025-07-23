@@ -169,6 +169,10 @@
         #heartbeatsTable th:nth-child(2), #heartbeatsTable td:nth-child(2) { width: 33.33%; }
         #heartbeatsTable th:nth-child(3), #heartbeatsTable td:nth-child(3) { width: 33.34%; }
         
+        #shieldsTable th:nth-child(1), #shieldsTable td:nth-child(1) { width: 33.33%; }
+        #shieldsTable th:nth-child(2), #shieldsTable td:nth-child(2) { width: 33.33%; }
+        #shieldsTable th:nth-child(3), #shieldsTable td:nth-child(3) { width: 33.34%; }
+        
         .dataTables_wrapper .dataTables_filter input,
         .dataTables_wrapper .dataTables_length select {
             border: 1px solid #ccc;
@@ -237,6 +241,10 @@
             background-color: #95a5a6;
             color: white;
         }
+        .status-active {
+            background-color: #3498db;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -250,7 +258,7 @@
         </div>
         <div class="header-buttons">
             <button id="logoutButton" onclick="confirmLogout()">Logout</button>
-            <button id="refreshButton" onclick="refreshActiveTable()">Refresh</button>
+            <button id="refreshButton" onclick="refreshAllTables()">Refresh</button>
         </div>
     </div>
 
@@ -271,6 +279,11 @@
             <div class="stat-value" id="heartbeatsCount">-</div>
             <div class="stat-subtitle" id="latestHeartbeat">Loading...</div>
         </div>
+        <div class="stat-card">
+            <h3>Active Shields</h3>
+            <div class="stat-value" id="shieldsCount">-</div>
+            <div class="stat-subtitle" id="latestShield">Loading...</div>
+        </div>
     </div>
 
     <div class="tab">
@@ -278,15 +291,17 @@
         <button class="tablinks" onclick="openTab(event, 'PDNS')">PDNS Data</button>
         <button class="tablinks" onclick="openTab(event, 'Batches')">Upload Batches</button>
         <button class="tablinks" onclick="openTab(event, 'Heartbeats')">Heartbeats</button>
+        <button class="tablinks" onclick="openTab(event, 'Shields')">Shields</button>
     </div>
 
     <div id="Overview" class="tabcontent">
         <h2>System Overview</h2>
-        <p>Welcome to the Sensor Data Dashboard. Use the tabs above to navigate between different data views:</p>
+        <p>Welcome to the Passive DNS Data Dashboard. Use the tabs above to navigate between different data views:</p>
         <ul>
             <li><strong>PDNS Data:</strong> View passive DNS resolution records</li>
             <li><strong>Upload Batches:</strong> Monitor data upload batches and their processing status</li>
-            <li><strong>Heartbeats:</strong> Monitor sensor connectivity and health signals</li>
+            <li><strong>Heartbeats:</strong> Monitor shield connectivity and health signals</li>
+            <li><strong>Shields:</strong> View active shields with their last activity and heartbeat statistics</li>
         </ul>
         <p>The dashboard automatically refreshes every 30 seconds. Use the Refresh button to manually update the current view.</p>
         
@@ -295,6 +310,7 @@
         <ul>
             <li>🟢 <strong>Success/Processed</strong> - Data successfully processed</li>
             <li>🟡 <strong>Warning/Pending</strong> - Data awaiting processing</li>
+            <li>🔵 <strong>Active</strong> - Shield is actively reporting</li>
             <li>⚫ <strong>Unknown/Secondary</strong> - Status unclear or secondary priority</li>
         </ul>
     </div>
@@ -343,9 +359,25 @@
             <table id="heartbeatsTable" class="display">
                 <thead>
                     <tr>
-                        <th>Sensor ID</th>
+                        <th>Shield ID</th>
                         <th>Timestamp</th>
                         <th>Received At</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+
+    <div id="Shields" class="tabcontent">
+        <h2>Active Shields</h2>
+        <div class="table-container">
+            <table id="shieldsTable" class="display">
+                <thead>
+                    <tr>
+                        <th>Shield ID</th>
+                        <th>Last Seen</th>
+                        <th>Heartbeat Count</th>
                     </tr>
                 </thead>
                 <tbody></tbody>
@@ -404,15 +436,17 @@
                     dataSrc: function(json) {
                         if (json.error) {
                             console.error('PDNS API Error:', json.error);
-                            alert('Error loading PDNS data: ' + json.error);
                             return [];
                         }
-                        console.log('PDNS data loaded:', json.data.length, 'records');
-                        return json.data;
+                        console.log('PDNS data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
                     },
                     error: function(xhr, error, code) {
-                        console.error('PDNS AJAX Error:', error, code);
-                        alert('Failed to load PDNS data. Check console for details.');
+                        console.error('PDNS AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load PDNS data:', xhr.responseText);
+                        }
                     }
                 },
                 columns: [
@@ -440,16 +474,18 @@
                     url: '/api/upload-batches',
                     dataSrc: function(json) {
                         if (json.error) {
-                            console.error('Batches API Error:', json.error);
-                            alert('Error loading batch data: ' + json.error);
+                            console.error('Batch API Error:', json.error);
                             return [];
                         }
-                        console.log('Batches data loaded:', json.data.length, 'records');
-                        return json.data;
+                        console.log('Batch data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
                     },
                     error: function(xhr, error, code) {
-                        console.error('Batches AJAX Error:', error, code);
-                        alert('Failed to load batch data. Check console for details.');
+                        console.error('Batch AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load Batch data:', xhr.responseText);
+                        }
                     }
                 },
                 columns: [
@@ -473,24 +509,71 @@
                     url: '/api/heartbeats',
                     dataSrc: function(json) {
                         if (json.error) {
-                            console.error('Heartbeats API Error:', json.error);
-                            alert('Error loading heartbeat data: ' + json.error);
+                            console.error('Heartbeat API Error:', json.error);
                             return [];
                         }
-                        console.log('Heartbeats data loaded:', json.data.length, 'records');
-                        return json.data;
+                        console.log('Heartbeat data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
                     },
                     error: function(xhr, error, code) {
-                        console.error('Heartbeats AJAX Error:', error, code);
-                        alert('Failed to load heartbeat data. Check console for details.');
+                        console.error('Heartbeat AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load Heartbeat data:', xhr.responseText);
+                        }
                     }
                 },
                 columns: [
-                    { data: 'sensor_id' },
+                    { data: 'shield_id' },
                     { data: 'timestamp' },
                     { data: 'received_at' }
                 ],
                 order: [[2, 'desc']]
+            };
+        } else if (tableId === 'shieldsTable') {
+            config = {
+                ajax: {
+                    url: '/api/shields',
+                    dataSrc: function(json) {
+                        if (json.error) {
+                            console.error('Shield API Error:', json.error);
+                            return [];
+                        }
+                        console.log('Shield data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
+                    },
+                    error: function(xhr, error, code) {
+                        console.error('Shield AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load Shield data:', xhr.responseText);
+                        }
+                    }
+                },
+                columns: [
+                    { 
+                        data: 'shield_id',
+                        render: function(data, type, row) {
+                            return '<span class="status-badge status-active">' + data + '</span>';
+                        }
+                    },
+                    { 
+                        data: 'last_seen',
+                        render: function(data, type, row) {
+                            if (type === 'display' || type === 'type') {
+                                return new Date(data).toLocaleString();
+                            }
+                            return data;
+                        }
+                    },
+                    { 
+                        data: 'heartbeat_count',
+                        render: function(data, type, row) {
+                            return data.toLocaleString();
+                        }
+                    }
+                ],
+                order: [[1, 'desc']]
             };
         }
 
@@ -512,8 +595,9 @@
         Promise.all([
             fetch('/api/pdns-data').then(r => r.json()).catch(() => ({error: true})),
             fetch('/api/upload-batches').then(r => r.json()).catch(() => ({error: true})),
-            fetch('/api/heartbeats').then(r => r.json()).catch(() => ({error: true}))
-        ]).then(([pdnsData, batchesData, heartbeatsData]) => {
+            fetch('/api/heartbeats').then(r => r.json()).catch(() => ({error: true})),
+            fetch('/api/shields').then(r => r.json()).catch(() => ({error: true}))
+        ]).then(([pdnsData, batchesData, heartbeatsData, shieldsData]) => {
             // Update PDNS stats
             if (!pdnsData.error && pdnsData.data) {
                 document.getElementById('pdnsCount').textContent = pdnsData.data.length.toLocaleString();
@@ -546,6 +630,17 @@
                 document.getElementById('heartbeatsCount').textContent = 'Error';
                 document.getElementById('latestHeartbeat').textContent = 'Failed to load';
             }
+
+            // Update Shields stats
+            if (!shieldsData.error && shieldsData.data) {
+                document.getElementById('shieldsCount').textContent = shieldsData.data.length.toLocaleString();
+                const latestShield = shieldsData.data.length > 0 ? shieldsData.data[0].last_seen : 'No data';
+                document.getElementById('latestShield').textContent = 
+                    latestShield === 'No data' ? 'No data' : 'Latest: ' + new Date(latestShield).toLocaleString();
+            } else {
+                document.getElementById('shieldsCount').textContent = 'Error';
+                document.getElementById('latestShield').textContent = 'Failed to load';
+            }
         });
     }
 
@@ -574,23 +669,30 @@
             });
     }
 
-    function refreshActiveTable() {
-        // Refresh stats and health regardless of active tab
+    function refreshAllTables() {
         loadStats();
         checkHealth();
         
-        // Refresh active table if it exists
-        if (currentActiveTab !== 'Overview') {
-            const activeTableElement = document.getElementById(currentActiveTab).querySelector('table');
-            if (activeTableElement) {
-                const activeTableId = activeTableElement.id;
-                if (initializedTables[activeTableId]) {
-                    console.log('Refreshing table:', activeTableId);
-                    initializedTables[activeTableId].ajax.reload(null, false);
-                }
+        // Refresh all initialized tables
+        Object.keys(initializedTables).forEach(tableId => {
+            if (initializedTables[tableId]) {
+                console.log('Refreshing table:', tableId);
+                initializedTables[tableId].ajax.reload(null, false);
             }
-        }
+        });
     }
+
+    setInterval(function() {
+        refreshAllTables();
+    }, 30000);
+
+    setInterval(function() {
+        try {
+            refreshAllTables();
+        } catch (error) {
+            console.error('Auto-refresh failed:', error);
+        }
+    }, 30000);
 
     function confirmLogout() {
         if (confirm('Are you sure you want to log out?')) {
@@ -610,7 +712,7 @@
         
         // Auto-refresh every 30 seconds
         setInterval(function() {
-            refreshActiveTable();
+            refreshAllTables();
         }, 30000);
     });
 </script>

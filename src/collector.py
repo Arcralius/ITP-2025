@@ -1,4 +1,4 @@
-import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, shutil, threading
+import base64, hashlib, hmac, json, logging, os, tempfile, sqlite3, threading, uuid, time, socket, shutil, threading, traceback
 from datetime import datetime, timezone, UTC
 from functools import wraps
 import config
@@ -20,8 +20,6 @@ except Exception as e:
 os.makedirs(config.LOG_DIR, exist_ok=True)
 os.makedirs(config.KEY_STORE_DIR, exist_ok=True)
 
-# TODO: make collector and privacy shield dashboards consistent style & features 
-# TODO: add api documentation and data security and validation https://swagger.io/docs/ use this to document apis used
 # TODO: format logging (red for error, yellow for warning, green for info)
 
 # --- Display PDNS data ---
@@ -157,7 +155,7 @@ def get_heartbeats():
         with sqlite3.connect("pdns.db") as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT sensor_id, timestamp, received_at
+                SELECT shield_id, timestamp, received_at
                 FROM heartbeats
                 ORDER BY received_at DESC
             """)
@@ -166,7 +164,7 @@ def get_heartbeats():
             heartbeats = []
             for row in rows:
                 heartbeats.append({
-                    'sensor_id': row[0],
+                    'shield_id': row[0],
                     'timestamp': row[1],
                     'received_at': row[2]
                 })
@@ -179,6 +177,42 @@ def get_heartbeats():
     except Exception as e:
         print(f"[Error] Failed to retrieve heartbeats: {e}")
         return jsonify({'data': [], 'error': str(e)})
+
+@app.route('/api/shields', methods=['GET'])
+@login_required
+def get_active_shields():
+    """API endpoint to get list of active shields"""
+    try:
+        conn = db.get_db_connection(config.PDNS_DATABASE)
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Get unique shield IDs from heartbeats with their latest activity
+        cursor.execute("""
+            SELECT shield_id, MAX(received_at) as last_seen, COUNT(*) as heartbeat_count
+            FROM heartbeats 
+            GROUP BY shield_id 
+            ORDER BY last_seen DESC
+        """)
+        
+        shields = []
+        for row in cursor.fetchall():
+            shields.append({
+                'shield_id': row['shield_id'],
+                'last_seen': row['last_seen'],
+                'heartbeat_count': row['heartbeat_count']
+            })
+        
+        conn.close()
+        logging.info(f"Retrieved {len(shields)} shield records")
+        return jsonify({'data': shields})
+        
+    except Exception as e:
+        logging.error(f"Error in get_active_shields: {e}")
+        logging.error(traceback.format_exc())
+        return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
 @app.route('/api/health', methods=['GET'])
 @login_required
@@ -240,20 +274,20 @@ def serve_KeySig():
 
 @app.route("/heartbeat", methods=["POST"])
 def heartbeat():
-    """Receives and validates sensor heartbeat signals, logging them to database."""
+    """Receives and validates shield heartbeat signals, logging them to database."""
     data = request.json
-    sensor_id = data.get("sensor_id")
+    shield_id = data.get("shield_id")
     timestamp = data.get("timestamp")
     signature = data.get("signature")
-    if not all([sensor_id, timestamp, signature]):
+    if not all([shield_id, timestamp, signature]):
         return jsonify({"error": "Missing fields"}), 400
    
-    if db.guid_exists(sensor_id, config.USER_DATABASE):
+    if db.guid_exists(shield_id, config.USER_DATABASE):
         pwd_path = server.append_today_date_if_missing(config.PASS_PATH)
         with open(pwd_path, 'r', encoding='utf-8') as f:
             password = f.readline().strip()
    
-    message = f"{sensor_id}|{timestamp}"
+    message = f"{shield_id}|{timestamp}"
     expected_signature = hmac.new(password.encode(), message.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(signature, expected_signature):
         return jsonify({"error": "Invalid signature"}), 401
@@ -264,11 +298,11 @@ def heartbeat():
             cursor = conn.cursor()
             received_at = datetime.now(timezone.utc).isoformat()
             cursor.execute("""
-                INSERT INTO heartbeats (sensor_id, timestamp, received_at)
+                INSERT INTO heartbeats (shield_id, timestamp, received_at)
                 VALUES (?, ?, ?)
-            """, (sensor_id, timestamp, received_at))
+            """, (shield_id, timestamp, received_at))
             conn.commit()
-        print(f"Heartbeat from {sensor_id} received and validated, logged to database.")
+        print(f"Heartbeat from {shield_id} received and validated, logged to database.")
     except sqlite3.Error as e:
         print(f"[Database Error] Failed to log heartbeat: {e}")
         logging.exception(f"Heartbeat database error: {e}")

@@ -151,7 +151,7 @@ def init_pdns_db(db_name="pdns.db"):
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS heartbeats (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sensor_id TEXT NOT NULL,
+                    shield_id TEXT NOT NULL,
                     timestamp TEXT NOT NULL,
                     received_at TEXT NOT NULL
                 );

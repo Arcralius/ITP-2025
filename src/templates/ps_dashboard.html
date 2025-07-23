@@ -261,7 +261,7 @@
         </div>
         <div class="header-buttons">
             <button id="logoutButton" data-logout-url="{{ url_for('logout') }}" onclick="confirmLogout(this)">Logout</button>
-            <button id="refreshButton" onclick="refreshActiveTable()">Refresh</button>
+            <button id="refreshButton" onclick="refreshAllTables()">Refresh</button>
         </div>
     </div>
 
@@ -438,16 +438,18 @@
                     url: '/api/heartbeats',
                     dataSrc: function(json) {
                         if (json.error) {
-                            console.error('Heartbeats API Error:', json.error);
-                            alert('Error loading heartbeat data: ' + json.error);
+                            console.error('Heartbeat API Error:', json.error);
                             return [];
                         }
-                        console.log('Heartbeats data loaded:', json.data.length, 'records');
-                        return json.data;
+                        console.log('Heartbeat data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
                     },
                     error: function(xhr, error, code) {
-                        console.error('Heartbeats AJAX Error:', error, code);
-                        alert('Failed to load heartbeat data. Check console for details.');
+                        console.error('Heartbeat AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load Heartbeat data:', xhr.responseText);
+                        }
                     }
                 },
                 columns: [
@@ -465,15 +467,17 @@
                     dataSrc: function(json) {
                         if (json.error) {
                             console.error('DNS API Error:', json.error);
-                            alert('Error loading DNS data: ' + json.error);
                             return [];
                         }
-                        console.log('DNS data loaded:', json.data.length, 'records');
-                        return json.data;
+                        console.log('DNS data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
                     },
                     error: function(xhr, error, code) {
-                        console.error('DNS AJAX Error:', error, code);
-                        alert('Failed to load DNS data. Check console for details.');
+                        console.error('DNS AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load DNS data:', xhr.responseText);
+                        }
                     }
                 },
                 columns: [
@@ -502,15 +506,17 @@
                     dataSrc: function(json) {
                         if (json.error) {
                             console.error('UDP API Error:', json.error);
-                            alert('Error loading UDP data: ' + json.error);
                             return [];
                         }
-                        console.log('UDP data loaded:', json.data.length, 'records');
-                        return json.data;
+                        console.log('UDP data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
                     },
                     error: function(xhr, error, code) {
-                        console.error('UDP AJAX Error:', error, code);
-                        alert('Failed to load UDP data. Check console for details.');
+                        console.error('UDP AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load UDP data:', xhr.responseText);
+                        }
                     }
                 },
                 columns: [
@@ -540,15 +546,17 @@
                     dataSrc: function(json) {
                         if (json.error) {
                             console.error('Sensors API Error:', json.error);
-                            alert('Error loading sensor data: ' + json.error);
                             return [];
                         }
-                        console.log('Sensors data loaded:', json.data.length, 'records');
-                        return json.data;
+                        console.log('Sensors data loaded:', json.data ? json.data.length : 0, 'records');
+                        return json.data || [];
                     },
                     error: function(xhr, error, code) {
-                        console.error('Sensors AJAX Error:', error, code);
-                        alert('Failed to load sensor data. Check console for details.');
+                        console.error('Sensors AJAX Error:', xhr.status, error, code);
+                        // Don't show alert on every auto-refresh failure
+                        if (xhr.status !== 0) { // 0 means request was aborted
+                            console.warn('Failed to load Sensors data:', xhr.responseText);
+                        }
                     }
                 },
                 columns: [
@@ -701,23 +709,31 @@
             });
     }
 
-    function refreshActiveTable() {
-        // Refresh stats and health regardless of active tab
+    function refreshAllTables() {
         loadStats();
-        loadSensorCount();
         checkHealth();
         
-        // Refresh active table if it exists
-        if (currentActiveTab !== 'Overview') {
-            const activeTableElement = document.getElementById(currentActiveTab).querySelector('table');
-            if (activeTableElement) {
-                const activeTableId = activeTableElement.id;
-                if (initializedTables[activeTableId]) {
-                    initializedTables[activeTableId].ajax.reload(null, false);
-                }
+        // Refresh all initialized tables
+        Object.keys(initializedTables).forEach(tableId => {
+            if (initializedTables[tableId]) {
+                console.log('Refreshing table:', tableId);
+                initializedTables[tableId].ajax.reload(null, false);
             }
-        }
+        });
     }
+
+    setInterval(function() {
+        refreshAllTables();
+    }, 30000);
+
+    setInterval(function() {
+        try {
+            refreshAllTables();
+        } catch (error) {
+            console.error('Auto-refresh failed:', error);
+        }
+    }, 30000);
+
 
     function confirmLogout(button) {
         const logoutUrl = button.getAttribute('data-logout-url');
@@ -738,7 +754,7 @@
         
         // Auto-refresh every 30 seconds
         setInterval(function() {
-            refreshActiveTable();
+            refreshAllTables();
         }, 30000);
     });
 </script>

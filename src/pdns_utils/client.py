@@ -15,13 +15,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Heartbeat functions ---
-def send_heartbeat(sensor_id, secret, heartbeat_url):
+def send_heartbeat(shield_id, secret, heartbeat_url):
     timestamp = datetime.now(timezone.utc).isoformat()
-    message = f"{sensor_id}|{timestamp}"
+    message = f"{shield_id}|{timestamp}"
     signature = hmac.new(secret.encode(), message.encode(), hashlib.sha256).hexdigest()
 
     payload = {
-        "sensor_id": sensor_id,
+        "shield_id": shield_id,
         "timestamp": timestamp,
         "signature": signature
     }
@@ -411,7 +411,7 @@ def send_udp_data(data, host, port):
    
     try:
         source_port = random.randint(32768, 65535)
-        source_ip = "24.42.69.222"
+        source_ip = "127.0.0.1" # "24.42.69.222"
         """
         24: From the classic SpongeBob SquarePants joke, "What's funnier than 24? ... 25!"
 
@@ -437,7 +437,7 @@ def send_udp_data(data, host, port):
     finally:
         sock.close()
 
-# --- Serve Sensor utility functions ---
+# --- Serve sensor utility functions ---
 def get_pwd(path_to_pwd_file):
     try:
         with open(path_to_pwd_file, 'r', encoding='utf-8') as f:

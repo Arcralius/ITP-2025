@@ -1,4 +1,4 @@
-import os, uuid
+import os
 # --- Logging Configuration ---
 LOG_DIR = 'logs'
 HEARTBEAT_LOG_FILE = 'heartbeats.jsonl'
